@@ -1,0 +1,5 @@
+# Dokumen asli (source .docx)
+*.docx
+
+# File temporary Office
+~$*.docx
