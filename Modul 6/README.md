@@ -1248,16 +1248,16 @@ curl -s http://localhost:5000/metrics | grep "flask_log_total_count"
 1. Buka **Connections → Data sources** (menu kiri)
 2. Pastikan ada 2 data source: **Prometheus** dan **PostgreSQL-Logs**
 
-<img src="images/8-2.png" alt="Figure 8.2 — Data sources Grafana" width="500">
-*Gambar 8.2: Screenshot halaman Data Sources Grafana — Prometheus dan PostgreSQL-Logs.*
+<img src="images/8-1.png" alt="Figure 8.1 — Data sources Grafana" width="500">
+*Gambar 8.1: Screenshot halaman Data Sources Grafana — Prometheus dan PostgreSQL-Logs.*
 
 3. Klik masing-masing → **Test** → harus "Data source is working"
 
-<img src="images/8-3.png" alt="Figure 8.3 — Test data source Prometheus" width="500">
-*Gambar 8.3: Screenshot hasil test koneksi data source Prometheus.*
+<img src="images/8-2.png" alt="Figure 8.2 — Test data source Prometheus" width="500">
+*Gambar 8.2: Screenshot hasil test koneksi data source Prometheus.*
 
-<img src="images/8-4.png" alt="Figure 8.4 — Test data source PostgreSQL" width="500">
-*Gambar 8.4: Screenshot hasil test koneksi data source PostgreSQL-Logs.*
+<img src="images/8-3.png" alt="Figure 8.3 — Test data source PostgreSQL" width="500">
+*Gambar 8.3: Screenshot hasil test koneksi data source PostgreSQL-Logs.*
 
 #### 8.3 Eksplorasi Dashboard yang Sudah di-Provision
 
@@ -1267,8 +1267,8 @@ curl -s http://localhost:5000/metrics | grep "flask_log_total_count"
    - **Container Metrics** — CPU/Memory/Network per container
    - **Log Analytics (PostgreSQL)** — log volume, distribusi level, recent errors
 
-<img src="images/8-5.png" alt="Figure 8.5 — Daftar dashboard Grafana" width="600">
-*Gambar 8.5: Screenshot halaman Dashboards — folder Lab PENS berisi 3 dashboard.*
+<img src="images/8-4.png" alt="Figure 8.4 — Daftar dashboard Grafana" width="600">
+*Gambar 8.4: Screenshot halaman Dashboards — folder Lab PENS berisi 3 dashboard.*
 
 #### 8.4 Buat Panel Custom Baru
 
@@ -1283,8 +1283,8 @@ curl -s http://localhost:5000/metrics | grep "flask_log_total_count"
 6. Beri judul: **Flask HTTP Requests by Endpoint**
 7. Klik **Apply**
 
-<img src="images/8-6.png" alt="Figure 8.6 — Panel custom Grafana" width="600">
-*Gambar 8.6: Screenshot pembuatan panel custom baru dengan query `flask_http_requests_total`.*
+<img src="images/8-5.png" alt="Figure 8.5 — Panel custom Grafana" width="600">
+*Gambar 8.5: Screenshot pembuatan panel custom baru dengan query `flask_http_requests_total`.*
 
 #### 8.5 Buat Alert Rule di Grafana
 
@@ -1300,8 +1300,8 @@ curl -s http://localhost:5000/metrics | grep "flask_log_total_count"
 7. Labels: `severity = warning`
 8. Klik **Save rule and exit**
 
-<img src="images/8-7.png" alt="Figure 8.7 — Alert rule Grafana" width="750">
-*Gambar 8.7: Screenshot pembuatan alert rule High CPU Alert di Grafana.*
+<img src="images/8-6.png" alt="Figure 8.6 — Alert rule Grafana" width="750">
+*Gambar 8.6: Screenshot pembuatan alert rule High CPU Alert di Grafana.*
 
 ---
 
