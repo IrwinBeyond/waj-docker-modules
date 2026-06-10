@@ -364,7 +364,6 @@ docker image prune -a
 <img src="images/3-9.png" alt="Figure 3.9 — Docker rmi alpine:3.20 & Docker image prune -a" width="700">
 *Gambar 3.9: Screenshot hasil `docker rmi alpine:3.20` menghapus image Alpine dan `docker image prune -a` menghapus semua image yang tidak digunakan.*
 
-
 ---
 
 ### Langkah 4: Menjalankan dan Mengelola Container
@@ -757,78 +756,6 @@ Image `alpine:3.20` berukuran sekitar **7 MB**, sedangkan `ubuntu:22.04` dapat m
 
 ---
 
-## DAFTAR GAMBAR
-
-| Figure | Deskripsi |
-|--------|-----------|
-| 0.1 | Hasil `ping -c 3 google.com` |
-| 0.2 | Hasil `sudo apt update && sudo apt upgrade -y` |
-| 1.1 | Menghapus Docker versi lama |
-| 1.2 | Instalasi dependensi |
-| 1.3 | Membuat direktori keyrings |
-| 1.4 | Download GPG key Docker |
-| 1.5 | Menambahkan repository Docker |
-| 1.6 | Apt update setelah menambah repository |
-| 1.7 | Instalasi Docker Engine |
-| 1.8 | Menambahkan user ke group docker |
-| 1.9 | Mengaktifkan group docker |
-| 1.10 | Docker version |
-| 1.11 | Docker info |
-| 1.12 | Systemctl status Docker |
-| 1.13 | Docker run hello-world |
-| 2.1 | Aktivasi WSL2 |
-| 2.2 | Proses instalasi Docker Desktop |
-| 2.3 | WSL 2 based engine setting |
-| 2.4 | WSL Integration settings |
-| 2.5 | Docker version dari PowerShell |
-| 2.6 | Hello-world dari PowerShell |
-| 2.7 | Docker version dari WSL |
-| 2.8 | Hello-world dari WSL |
-| 3.1 | Docker pull nginx |
-| 3.2 | Docker pull nginx:1.26 |
-| 3.3 | Docker pull ubuntu:22.04 |
-| 3.4 | Docker pull alpine:3.20 |
-| 3.5 | Docker images |
-| 3.6 | Docker images format custom |
-| 3.7 | Docker image inspect nginx |
-| 3.8 | Docker image history nginx |
-| 3.9 | Docker rmi alpine:3.20 |
-| 3.10 | Docker image prune -a |
-| 4.1 | Docker run nginx foreground |
-| 4.2 | Docker run detached mode |
-| 4.3 | Docker run port mapping |
-| 4.4 | Browser halaman default Nginx |
-| 4.5 | Docker run -it ubuntu |
-| 4.6 | cat /etc/os-release |
-| 4.7 | Instalasi curl di container |
-| 4.8 | Curl web-server dari container |
-| 4.9 | Exit container |
-| 4.10 | Docker ps |
-| 4.11 | Docker ps -a |
-| 4.12 | Docker logs web-server |
-| 4.13 | Docker logs follow dan tail |
-| 4.14 | Docker stats |
-| 4.15 | Docker inspect web-server |
-| 4.16 | Docker exec cat nginx.conf |
-| 4.17 | Docker exec -it bash |
-| 4.18 | Docker cp ke container |
-| 4.19 | Docker cp dari container |
-| 4.20 | Container lifecycle commands |
-| 4.21 | Docker container prune |
-| 5.1 | Membuat direktori project |
-| 5.2 | Membuat index.html |
-| 5.3 | Membuat Dockerfile |
-| 5.4 | Docker build |
-| 5.5 | Verifikasi image pens-web |
-| 5.6 | Docker run pens-app |
-| 5.7 | Curl localhost:9090 |
-| 5.8 | Browser halaman custom |
-| 5.9 | Image history nginx:1.26-alpine |
-| 5.10 | Image history pens-web:1.0 |
-| 6.1 | Docker system df |
-| 6.2 | Docker system df -v |
-| 6.3 | Docker system prune -a |
-| 6.4 | Docker system prune -a -f |
 ---
 
 *Laporan ini dibuat sebagai bagian dari praktikum Workshop Administrasi Jaringan, Program Studi D4 Teknik Informatika, Politeknik Elektronika Negeri Surabaya (PENS), 2026.*

@@ -680,38 +680,6 @@ Jika file certificate atau private key dihapus saat container sedang berjalan, k
 
 ---
 
-## DAFTAR GAMBAR
-
-| Figure | Deskripsi |
-|--------|-----------|
-| 0.1 | Membuat struktur direktori project |
-| 1.1 | Membuat halaman Site 1 |
-| 1.2 | Membuat halaman Site 2 |
-| 1.3 | Membuat konfigurasi Virtual Host Apache |
-| 1.4 | Membuat Dockerfile Apache |
-| 2.1 | Generate self-signed SSL certificate |
-| 2.2 | Verifikasi certificate |
-| 2.3 | List file certificate |
-| 3.1 | Membuat konfigurasi Nginx Reverse Proxy + SSL |
-| 4.1 | Membuat requirements.txt Flask |
-| 4.2 | Membuat aplikasi Flask |
-| 4.3 | Membuat Dockerfile Flask |
-| 5.1 | Membuat docker-compose.yml |
-| 6.1 | Menambahkan DNS lokal ke /etc/hosts |
-| 6.2 | Docker compose up build |
-| 6.3 | Docker compose ps |
-| 6.4 | Test redirect HTTP ke HTTPS |
-| 6.5 | Test Site 1 via HTTPS |
-| 6.6 | Test Site 2 via HTTPS |
-| 6.7 | Test Flask API |
-| 6.8 | POST visitor ke API |
-| 6.9 | GET daftar visitor |
-| 6.10 | Cek SSL certificate |
-| 6.11 | Log akses Nginx Site 1 |
-| 6.12 | Log akses Nginx App |
-| 6.13 | Log akses Apache Site 1 |
-| 6.14 | Akses log via Docker volume |
-
 ---
 
 *Laporan ini dibuat sebagai bagian dari praktikum Workshop Administrasi Jaringan, Program Studi D4 Teknik Informatika, Politeknik Elektronika Negeri Surabaya (PENS), 2026.*
