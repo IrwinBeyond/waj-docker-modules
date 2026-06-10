@@ -1243,9 +1243,6 @@ curl -s http://localhost:5000/metrics | grep "flask_log_total_count"
 2. Login: `admin` / `admin123`
 3. Skip change password (atau ganti sesuai keinginan)
 
-<img src="images/8-1.png" alt="Figure 8.1 — Login Grafana" width="500">
-*Gambar 8.1: Screenshot halaman login Grafana.*
-
 #### 8.2 Verifikasi Data Sources
 
 1. Buka **Connections → Data sources** (menu kiri)
