@@ -14,30 +14,29 @@
 
 ### 1. Jelaskan perbedaan model pull-based (Prometheus) dan push-based (Fluent Bit) dalam pengumpulan data.
 
-- Pull-based: server mengambil data sendiri dari target (Prometheus scrape /metrics endpoint). Prometheus secara berkala melakukan HTTP request ke setiap target yang dikonfigurasi, lalu menyimpan hasilnya ke time-series database.
-- Push-based: client/agent langsung mengirim data ke server tujuan (Fluent Bit push logs ke PostgreSQL). Data dikirimkan secara proaktif tanpa menunggu diminta oleh server.
+- Pull-based: server mengambil data sendiri dari target (Prometheus scrape /metrics).
+- Push-based: client langsung mengirim data (Fluent Bit push logs ke PostgreSQL).
 
 ### 2. Apa itu PromQL? Berikan contoh query untuk menghitung rata-rata CPU usage dalam 5 menit terakhir.
 
-PromQL adalah bahasa query untuk metrics di Prometheus. PromQL digunakan untuk mengambil, mengagregasi, dan memanipulasi data time-series yang disimpan di Prometheus TSDB.
+PromQL adalah bahasa query untuk metrics di Prometheus.
 
 Contoh rata-rata CPU usage 5 menit terakhir:
-
 ```
 100 - (avg(rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100)
 ```
 
 ### 3. Mengapa cAdvisor membutuhkan akses ke /var/run/docker.sock dan /sys?
 
-- `/var/run/docker.sock`: membaca informasi container Docker seperti nama container, image, label, dan metadata container lainnya melalui Docker API.
-- `/sys`: membaca statistik kernel seperti CPU, memory, disk I/O, network, dan cgroup yang menyediakan data resource usage setiap container secara real-time.
+- `/var/run/docker.sock`: membaca informasi container Docker.
+- `/sys`: membaca statistik kernel seperti CPU, memory, dan cgroup.
 
 ### 4. Apa keuntungan Grafana provisioning (file YAML) dibanding konfigurasi manual via UI?
 
-- otomatis saat startup — datasource dan dashboard langsung tersedia tanpa setup manual
-- bisa disimpan di Git — konfigurasi dapat di-versioning dan di-review
-- konsisten antar server — provisioning file menjamin environment development, staging, dan production identik
-- tidak perlu setup manual via UI — menghindari human error dan mempercepat deployment
+- otomatis saat startup
+- bisa disimpan di Git
+- konsisten antar server
+- tidak perlu setup manual via UI
 
 ### 5. Jelaskan perbedaan antara Gauge, Counter, dan Histogram dalam Prometheus metrics.
 
@@ -51,121 +50,149 @@ Contoh rata-rata CPU usage 5 menit terakhir:
 
 ## LANGKAH PRAKTIKUM
 
-### Langkah 0: Persiapan Environment
-
-Pastikan VM/Host sudah terinstall Docker Engine dan Docker Compose Plugin.
+### Langkah 0: Persiapan Project
 
 ```bash
-# Buat direktori project monitoring
-mkdir -p ~/monitoring-stack/{app,grafana/provisioning/datasources,grafana/provisioning/dashboards,grafana/dashboards}
-cd ~/monitoring-stack
+mkdir -p ~/docker-lab/monitoring/{prometheus,grafana/{provisioning/datasources,provisioning/dashboards,dashboards},app,generator,fluent-bit,init}
+cd ~/docker-lab/monitoring
 ```
 
-![Figure 0.1 — Membuat direktori project monitoring](images/placeholder.png)
-*Gambar 0.1: Screenshot hasil `mkdir -p` dan `cd` ke direktori project monitoring-stack.*
+<img src="images/0-1.png" alt="Figure 0.1 — Membuat direktori project monitoring" width="600">
+*Gambar 0.1: Screenshot hasil `mkdir -p` membuat struktur direktori project monitoring.*
 
 ---
 
 ### Langkah 1: Konfigurasi Prometheus
 
-#### 1.1 Buat file `prometheus.yml`
+#### 1.1 Buat konfigurasi scrape
 
 ```bash
-cat > prometheus.yml << 'EOF'
+cat > prometheus/prometheus.yml << 'EOF'
+# ==============================================
+# Prometheus Configuration
+# ==============================================
+
 global:
-  scrape_interval: 15s
-  evaluation_interval: 15s
+  scrape_interval: 15s      # Scrape setiap 15 detik
+  evaluation_interval: 15s  # Evaluasi rules setiap 15 detik
+  scrape_timeout: 10s
 
-alerting:
-  alertmanagers:
-    - static_configs:
-        - targets:
-          - alertmanager:9093
-
+# ==============================================
+# Alerting Rules
+# ==============================================
 rule_files:
-  - "/etc/prometheus/alert_rules.yml"
+  - "alert_rules.yml"
 
+# ==============================================
+# Scrape Targets
+# ==============================================
 scrape_configs:
+  # --- Prometheus self-monitoring ---
   - job_name: "prometheus"
     static_configs:
       - targets: ["localhost:9090"]
+    labels:
+      instance: "prometheus-server"
 
+  # --- Node Exporter (host metrics) ---
   - job_name: "node-exporter"
     static_configs:
       - targets: ["node-exporter:9100"]
+    labels:
+      instance: "docker-host"
 
+  # --- cAdvisor (container metrics) ---
   - job_name: "cadvisor"
     static_configs:
       - targets: ["cadvisor:8080"]
+    labels:
+      instance: "docker-containers"
 
+  # --- Flask Application ---
   - job_name: "flask-app"
+    metrics_path: "/metrics"
     static_configs:
-      - targets: ["flask-app:5050"]
+      - targets: ["flask-app:5000"]
+    labels:
+      instance: "flask-backend"
 EOF
 ```
 
-![Figure 1.1 — Membuat file prometheus.yml](images/placeholder.png)
-*Gambar 1.1: Screenshot hasil pembuatan file `prometheus.yml` — konfigurasi global, alerting, rule_files, dan 4 scrape jobs.*
+<img src="images/1-1.png" alt="Figure 1.1 — Membuat prometheus.yml" width="750">
+*Gambar 1.1: Screenshot hasil pembuatan `prometheus/prometheus.yml`.*
 
-#### 1.2 Buat file `alert_rules.yml`
+#### 1.2 Buat alert rules
 
 ```bash
-cat > alert_rules.yml << 'EOF'
+cat > prometheus/alert_rules.yml << 'EOF'
 groups:
+  - name: host_alerts
+    rules:
+      # CPU usage > 80% selama 2 menit
+      - alert: HighCpuUsage
+        expr: 100 - (avg(rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 80
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "CPU usage tinggi ({{ $value | printf \"%.1f\" }}%)"
+          description: "CPU usage di atas 80% selama lebih dari 2 menit."
+
+      # Memory available < 20%
+      - alert: LowMemoryAvailable
+        expr: (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes * 100) < 20
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Memory tersedia rendah ({{ $value | printf \"%.1f\" }}%)"
+
+      # Disk usage > 85%
+      - alert: HighDiskUsage
+        expr: 100 - (node_filesystem_avail_bytes{mountpoint="/"} / node_filesystem_size_bytes{mountpoint="/"} * 100) > 85
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Disk usage tinggi ({{ $value | printf \"%.1f\" }}%)"
+
   - name: container_alerts
     rules:
-      - alert: HighCPUUsage
-        expr: 100 - (avg(rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 80
-        for: 5m
-        labels:
-          severity: warning
-        annotations:
-          summary: "CPU usage tinggi (instance {{ $labels.instance }})"
-          description: "CPU usage di atas 80% selama 5 menit (nilai: {{ $value }}%)"
-
-      - alert: HighMemoryUsage
-        expr: (1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) * 100 > 85
-        for: 5m
-        labels:
-          severity: warning
-        annotations:
-          summary: "Memory usage tinggi (instance {{ $labels.instance }})"
-          description: "Memory usage di atas 85% (nilai: {{ $value }}%)"
-
-      - alert: ContainerDown
-        expr: absent(container_last_seen{name=~"flask-app|prometheus|grafana|cadvisor"})
+      # Container restart > 3 kali dalam 15 menit
+      - alert: ContainerRestartFrequent
+        expr: increase(container_restart_count[15m]) > 3
         for: 1m
         labels:
           severity: critical
         annotations:
-          summary: "Container {{ $labels.name }} mati"
-          description: "Container {{ $labels.name }} tidak terdeteksi selama 1 menit terakhir"
+          summary: "Container {{ $labels.name }} restart berulang"
 
-      - alert: HighDiskUsage
-        expr: (1 - (node_filesystem_avail_bytes{mountpoint="/"} / node_filesystem_size_bytes{mountpoint="/"})) * 100 > 80
+      # Container memory > 256MB
+      - alert: ContainerHighMemory
+        expr: container_memory_usage_bytes{name!=""} > 268435456
         for: 5m
         labels:
           severity: warning
         annotations:
-          summary: "Disk usage tinggi (instance {{ $labels.instance }})"
-          description: "Disk usage di atas 80% pada mountpoint {{ $labels.mountpoint }} (nilai: {{ $value }}%)"
+          summary: "Container {{ $labels.name }} memory > 256MB"
 EOF
 ```
 
-![Figure 1.2 — Membuat file alert_rules.yml](images/placeholder.png)
-*Gambar 1.2: Screenshot hasil pembuatan file `alert_rules.yml` — mendefinisikan 4 alert rules (HighCPUUsage, HighMemoryUsage, ContainerDown, HighDiskUsage).*
+<img src="images/1-2.png" alt="Figure 1.2 — Membuat alert rules" width="750">
+*Gambar 1.2: Screenshot hasil pembuatan `prometheus/alert_rules.yml`.*
 
 ---
 
-### Langkah 2: Konfigurasi Grafana Provisioning
+### Langkah 2: Konfigurasi Grafana (Provisioning)
 
-#### 2.1 Buat file `grafana/provisioning/datasources/datasources.yml`
+#### 2.1 Provisioning data source
 
 ```bash
 cat > grafana/provisioning/datasources/datasources.yml << 'EOF'
 apiVersion: 1
 
 datasources:
+  # --- Prometheus (metrics) ---
   - name: Prometheus
     type: prometheus
     access: proxy
@@ -174,1848 +201,859 @@ datasources:
     editable: true
     jsonData:
       timeInterval: "15s"
-      queryTimeout: "60s"
-      httpMethod: "POST"
 
-  - name: PostgreSQL
+  # --- PostgreSQL (logs dari Modul 5) ---
+  - name: PostgreSQL-Logs
     type: postgres
     access: proxy
-    url: postgres:5432
-    database: logdb
-    user: loguser
+    url: postgres-db:5432
+    database: labdb
+    user: labuser
     secureJsonData:
-      password: "logpass123"
+      password: labpass123
     jsonData:
-      sslmode: "disable"
-      timescaledb: false
+      sslmode: disable
+      maxOpenConns: 5
       postgresVersion: 1600
+      timescaledb: false
+    editable: true
 EOF
 ```
 
-![Figure 2.1 — Membuat file datasources.yml](images/placeholder.png)
-*Gambar 2.1: Screenshot hasil pembuatan file `grafana/provisioning/datasources/datasources.yml` — 2 datasource (Prometheus dan PostgreSQL) dikonfigurasi sebagai provisioning.*
+<img src="images/2-1.png" alt="Figure 2.1 — Provisioning data source" width="750">
+*Gambar 2.1: Screenshot hasil pembuatan `grafana/provisioning/datasources/datasources.yml`.*
 
-#### 2.2 Buat file `grafana/provisioning/dashboards/dashboards.yml`
+#### 2.2 Provisioning dashboard
 
 ```bash
 cat > grafana/provisioning/dashboards/dashboards.yml << 'EOF'
 apiVersion: 1
 
 providers:
-  - name: "Monitoring Dashboards"
+  - name: "Lab PENS Dashboards"
     orgId: 1
-    folder: ""
+    folder: "Lab PENS"
     type: file
     disableDeletion: false
-    updateIntervalSeconds: 10
-    allowUiUpdates: true
+    editable: true
+    updateIntervalSeconds: 30
     options:
       path: /var/lib/grafana/dashboards
       foldersFromFilesStructure: false
 EOF
 ```
 
-![Figure 2.2 — Membuat file dashboards.yml](images/placeholder.png)
-*Gambar 2.2: Screenshot hasil pembuatan file `grafana/provisioning/dashboards/dashboards.yml` — dashboard provider dikonfigurasi untuk auto-load dari direktori dashboards.*
+<img src="images/2-2.png" alt="Figure 2.2 — Provisioning dashboard" width="750">
+*Gambar 2.2: Screenshot hasil pembuatan `grafana/provisioning/dashboards/dashboards.yml`.*
 
-#### 2.3 Buat dashboard `grafana/dashboards/docker-host-overview.json`
+#### 2.3 Buat Dashboard JSON: Docker Host Overview
 
 ```bash
 cat > grafana/dashboards/docker-host-overview.json << 'JSONEOF'
 {
-  "annotations": {
-    "list": [
-      {
-        "builtIn": 1,
-        "datasource": { "type": "datasource", "uid": "grafana" },
-        "enable": true,
-        "hide": true,
-        "iconColor": "rgba(0, 211, 255, 1)",
-        "name": "Annotations & Alerts",
-        "target": {
-          "limit": 100,
-          "matchAny": false,
-          "tags": [],
-          "type": "dashboard"
-        },
-        "type": "dashboard"
-      }
-    ]
-  },
+  "annotations": { "list": [] },
   "editable": true,
   "fiscalYearStartMonth": 0,
-  "graphTooltip": 0,
-  "id": null,
+  "graphTooltip": 1,
   "links": [],
   "panels": [
     {
-      "collapsed": false,
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
-      "id": 100,
-      "panels": [],
-      "title": "CPU & Memory Overview",
-      "type": "row"
-    },
-    {
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "title": "CPU Usage %",
+      "type": "gauge",
+      "gridPos": { "h": 6, "w": 6, "x": 0, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "" },
       "fieldConfig": {
         "defaults": {
-          "color": { "mode": "palette-classic" },
-          "custom": {
-            "axisBorderShow": false,
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisLabel": "",
-            "axisPlacement": "auto",
-            "barAlignment": 0,
-            "drawStyle": "line",
-            "fillOpacity": 10,
-            "gradientMode": "none",
-            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
-            "insertNulls": false,
-            "lineInterpolation": "linear",
-            "lineWidth": 2,
-            "pointSize": 5,
-            "scaleDistribution": { "type": "linear" },
-            "showPoints": "never",
-            "spanNulls": false,
-            "stacking": { "group": "A", "mode": "none" },
-            "thresholdsStyle": { "mode": "off" }
-          },
-          "mappings": [],
           "thresholds": {
             "mode": "absolute",
             "steps": [
               { "color": "green", "value": null },
-              { "color": "red", "value": 80 }
-            ]
-          },
-          "unit": "percent"
-        },
-        "overrides": []
-      },
-      "gridPos": { "h": 10, "w": 12, "x": 0, "y": 1 },
-      "id": 1,
-      "options": {
-        "legend": { "calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true },
-        "tooltip": { "mode": "multi", "sort": "none" }
-      },
-      "targets": [
-        {
-          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-          "expr": "100 - (avg(rate(node_cpu_seconds_total{mode=\"idle\",instance=~\"$instance\"}[$__rate_interval])) * 100)",
-          "legendFormat": "CPU Usage",
-          "refId": "A"
-        },
-        {
-          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-          "expr": "avg(rate(node_cpu_seconds_total{mode=\"iowait\",instance=~\"$instance\"}[$__rate_interval])) * 100",
-          "legendFormat": "IO Wait",
-          "refId": "B"
-        },
-        {
-          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-          "expr": "avg(rate(node_cpu_seconds_total{mode=\"system\",instance=~\"$instance\"}[$__rate_interval])) * 100",
-          "legendFormat": "System",
-          "refId": "C"
-        },
-        {
-          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-          "expr": "avg(rate(node_cpu_seconds_total{mode=\"user\",instance=~\"$instance\"}[$__rate_interval])) * 100",
-          "legendFormat": "User",
-          "refId": "D"
-        }
-      ],
-      "title": "CPU Usage",
-      "type": "timeseries"
-    },
-    {
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-      "fieldConfig": {
-        "defaults": {
-          "color": { "mode": "palette-classic" },
-          "custom": {
-            "axisBorderShow": false,
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisLabel": "",
-            "axisPlacement": "auto",
-            "barAlignment": 0,
-            "drawStyle": "line",
-            "fillOpacity": 10,
-            "gradientMode": "none",
-            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
-            "insertNulls": false,
-            "lineInterpolation": "linear",
-            "lineWidth": 2,
-            "pointSize": 5,
-            "scaleDistribution": { "type": "linear" },
-            "showPoints": "never",
-            "spanNulls": false,
-            "stacking": { "group": "A", "mode": "none" },
-            "thresholdsStyle": { "mode": "off" }
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              { "color": "green", "value": null },
+              { "color": "yellow", "value": 60 },
               { "color": "red", "value": 85 }
             ]
           },
-          "unit": "bytes"
+          "unit": "percent", "min": 0, "max": 100
         },
         "overrides": []
       },
-      "gridPos": { "h": 10, "w": 12, "x": 12, "y": 1 },
-      "id": 2,
-      "options": {
-        "legend": { "calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true },
-        "tooltip": { "mode": "multi", "sort": "none" }
-      },
-      "targets": [
-        {
-          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-          "expr": "node_memory_MemTotal_bytes{instance=~\"$instance\"}",
-          "legendFormat": "Total",
-          "refId": "A"
-        },
-        {
-          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-          "expr": "node_memory_MemTotal_bytes{instance=~\"$instance\"} - node_memory_MemAvailable_bytes{instance=~\"$instance\"}",
-          "legendFormat": "Used",
-          "refId": "B"
-        },
-        {
-          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-          "expr": "node_memory_MemAvailable_bytes{instance=~\"$instance\"}",
-          "legendFormat": "Available",
-          "refId": "C"
-        },
-        {
-          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-          "expr": "node_memory_Buffers_bytes{instance=~\"$instance\"} + node_memory_Cached_bytes{instance=~\"$instance\"}",
-          "legendFormat": "Buffered/Cached",
-          "refId": "D"
-        }
-      ],
-      "title": "Memory Usage",
-      "type": "timeseries"
+      "targets": [{
+        "expr": "100 - (avg(rate(node_cpu_seconds_total{mode=\"idle\"}[5m])) * 100)",
+        "legendFormat": "CPU Usage"
+      }]
     },
     {
-      "collapsed": false,
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 11 },
-      "id": 101,
-      "panels": [],
-      "title": "Disk & Network",
-      "type": "row"
-    },
-    {
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "title": "Memory Usage %",
+      "type": "gauge",
+      "gridPos": { "h": 6, "w": 6, "x": 6, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "" },
       "fieldConfig": {
         "defaults": {
-          "color": { "mode": "palette-classic" },
-          "custom": {
-            "axisBorderShow": false,
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisLabel": "",
-            "axisPlacement": "auto",
-            "barAlignment": 0,
-            "drawStyle": "line",
-            "fillOpacity": 10,
-            "gradientMode": "none",
-            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
-            "insertNulls": false,
-            "lineInterpolation": "linear",
-            "lineWidth": 2,
-            "pointSize": 5,
-            "scaleDistribution": { "type": "linear" },
-            "showPoints": "never",
-            "spanNulls": false,
-            "stacking": { "group": "A", "mode": "none" },
-            "thresholdsStyle": { "mode": "off" }
-          },
-          "mappings": [],
           "thresholds": {
             "mode": "absolute",
             "steps": [
               { "color": "green", "value": null },
-              { "color": "red", "value": 80 }
+              { "color": "yellow", "value": 70 },
+              { "color": "red", "value": 90 }
             ]
           },
-          "unit": "percent"
+          "unit": "percent", "min": 0, "max": 100
         },
         "overrides": []
       },
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 12 },
-      "id": 3,
-      "options": {
-        "legend": { "calcs": [], "displayMode": "table", "placement": "bottom", "showLegend": true },
-        "tooltip": { "mode": "multi", "sort": "none" }
-      },
-      "targets": [
-        {
-          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-          "expr": "(1 - (node_filesystem_avail_bytes{mountpoint=\"/\",instance=~\"$instance\"} / node_filesystem_size_bytes{mountpoint=\"/\",instance=~\"$instance\"})) * 100",
-          "legendFormat": "Disk Usage /",
-          "refId": "A"
-        }
-      ],
-      "title": "Disk Usage (Root)",
-      "type": "timeseries"
+      "targets": [{
+        "expr": "100 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes * 100)",
+        "legendFormat": "Memory Used"
+      }]
     },
     {
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "title": "Disk Usage %",
+      "type": "gauge",
+      "gridPos": { "h": 6, "w": 6, "x": 12, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "" },
       "fieldConfig": {
         "defaults": {
-          "color": { "mode": "palette-classic" },
-          "custom": {
-            "axisBorderShow": false,
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisLabel": "",
-            "axisPlacement": "auto",
-            "barAlignment": 0,
-            "drawStyle": "line",
-            "fillOpacity": 10,
-            "gradientMode": "none",
-            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
-            "insertNulls": false,
-            "lineInterpolation": "linear",
-            "lineWidth": 2,
-            "pointSize": 5,
-            "scaleDistribution": { "type": "linear" },
-            "showPoints": "never",
-            "spanNulls": false,
-            "stacking": { "group": "A", "mode": "none" },
-            "thresholdsStyle": { "mode": "off" }
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              { "color": "green", "value": null }
-            ]
-          },
-          "unit": "Bps"
-        },
-        "overrides": [
-          {
-            "matcher": { "id": "byName", "options": "Receive" },
-            "properties": [
-              { "id": "custom.transform", "value": "negative-y" }
-            ]
-          }
-        ]
-      },
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 12 },
-      "id": 4,
-      "options": {
-        "legend": { "calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true },
-        "tooltip": { "mode": "multi", "sort": "none" }
-      },
-      "targets": [
-        {
-          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-          "expr": "rate(node_network_receive_bytes_total{device!=\"lo\",instance=~\"$instance\"}[$__rate_interval])",
-          "legendFormat": "Receive - {{ device }}",
-          "refId": "A"
-        },
-        {
-          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-          "expr": "rate(node_network_transmit_bytes_total{device!=\"lo\",instance=~\"$instance\"}[$__rate_interval])",
-          "legendFormat": "Transmit - {{ device }}",
-          "refId": "B"
-        }
-      ],
-      "title": "Network Traffic",
-      "type": "timeseries"
-    },
-    {
-      "collapsed": false,
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 20 },
-      "id": 102,
-      "panels": [],
-      "title": "System Overview",
-      "type": "row"
-    },
-    {
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-      "fieldConfig": {
-        "defaults": {
-          "color": { "mode": "thresholds" },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              { "color": "green", "value": null }
-            ]
-          },
-          "unit": "s"
-        },
-        "overrides": []
-      },
-      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 21 },
-      "id": 5,
-      "options": {
-        "colorMode": "value",
-        "graphMode": "area",
-        "justifyMode": "auto",
-        "orientation": "auto",
-        "percentChangeColorMode": "standard",
-        "reduceOptions": {
-          "calcs": ["lastNotNull"],
-          "fields": "",
-          "values": false
-        },
-        "showPercentChange": false,
-        "textMode": "auto",
-        "wideLayout": true
-      },
-      "pluginVersion": "10.0.0",
-      "targets": [
-        {
-          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-          "expr": "time() - node_boot_time_seconds{instance=~\"$instance\"}",
-          "refId": "A"
-        }
-      ],
-      "title": "Uptime",
-      "type": "stat"
-    },
-    {
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-      "fieldConfig": {
-        "defaults": {
-          "color": { "mode": "thresholds" },
-          "mappings": [],
           "thresholds": {
             "mode": "absolute",
             "steps": [
               { "color": "green", "value": null },
-              { "color": "orange", "value": 1 },
-              { "color": "red", "value": 5 }
+              { "color": "yellow", "value": 70 },
+              { "color": "red", "value": 85 }
             ]
           },
-          "unit": "none"
+          "unit": "percent", "min": 0, "max": 100
         },
         "overrides": []
       },
-      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 21 },
-      "id": 6,
-      "options": {
-        "colorMode": "value",
-        "graphMode": "area",
-        "justifyMode": "auto",
-        "orientation": "auto",
-        "percentChangeColorMode": "standard",
-        "reduceOptions": {
-          "calcs": ["lastNotNull"],
-          "fields": "",
-          "values": false
-        },
-        "showPercentChange": false,
-        "textMode": "auto",
-        "wideLayout": true
-      },
-      "pluginVersion": "10.0.0",
-      "targets": [
-        {
-          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-          "expr": "count(node_cpu_seconds_total{mode=\"idle\",instance=~\"$instance\"})",
-          "refId": "A"
-        }
-      ],
-      "title": "CPU Cores",
-      "type": "stat"
+      "targets": [{
+        "expr": "100 - (node_filesystem_avail_bytes{mountpoint=\"/\"} / node_filesystem_size_bytes{mountpoint=\"/\"} * 100)",
+        "legendFormat": "Disk Used"
+      }]
     },
     {
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-      "fieldConfig": {
-        "defaults": {
-          "color": { "mode": "thresholds" },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              { "color": "green", "value": null }
-            ]
-          },
-          "unit": "decbytes"
-        },
-        "overrides": []
-      },
-      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 21 },
-      "id": 7,
-      "options": {
-        "colorMode": "value",
-        "graphMode": "area",
-        "justifyMode": "auto",
-        "orientation": "auto",
-        "percentChangeColorMode": "standard",
-        "reduceOptions": {
-          "calcs": ["lastNotNull"],
-          "fields": "",
-          "values": false
-        },
-        "showPercentChange": false,
-        "textMode": "auto",
-        "wideLayout": true
-      },
-      "pluginVersion": "10.0.0",
-      "targets": [
-        {
-          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-          "expr": "node_memory_MemTotal_bytes{instance=~\"$instance\"}",
-          "refId": "A"
-        }
-      ],
-      "title": "Total RAM",
-      "type": "stat"
+      "title": "System Uptime",
+      "type": "stat",
+      "gridPos": { "h": 6, "w": 6, "x": 18, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "" },
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "targets": [{
+        "expr": "node_time_seconds - node_boot_time_seconds",
+        "legendFormat": "Uptime"
+      }]
     },
     {
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-      "fieldConfig": {
-        "defaults": {
-          "color": { "mode": "thresholds" },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              { "color": "green", "value": null }
-            ]
-          },
-          "unit": "decbytes"
-        },
-        "overrides": []
-      },
-      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 21 },
-      "id": 8,
-      "options": {
-        "colorMode": "value",
-        "graphMode": "area",
-        "justifyMode": "auto",
-        "orientation": "auto",
-        "percentChangeColorMode": "standard",
-        "reduceOptions": {
-          "calcs": ["lastNotNull"],
-          "fields": "",
-          "values": false
-        },
-        "showPercentChange": false,
-        "textMode": "auto",
-        "wideLayout": true
-      },
-      "pluginVersion": "10.0.0",
+      "title": "CPU Usage Over Time",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 6 },
+      "datasource": { "type": "prometheus", "uid": "" },
+      "fieldConfig": { "defaults": { "unit": "percent", "min": 0, "max": 100 }, "overrides": [] },
       "targets": [
-        {
-          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-          "expr": "node_filesystem_size_bytes{mountpoint=\"/\",instance=~\"$instance\"}",
-          "refId": "A"
-        }
-      ],
-      "title": "Total Disk",
-      "type": "stat"
+        { "expr": "100 - (avg(rate(node_cpu_seconds_total{mode=\"idle\"}[5m])) * 100)", "legendFormat": "Total CPU %" },
+        { "expr": "avg(rate(node_cpu_seconds_total{mode=\"user\"}[5m])) * 100", "legendFormat": "User" },
+        { "expr": "avg(rate(node_cpu_seconds_total{mode=\"system\"}[5m])) * 100", "legendFormat": "System" },
+        { "expr": "avg(rate(node_cpu_seconds_total{mode=\"iowait\"}[5m])) * 100", "legendFormat": "IOWait" }
+      ]
+    },
+    {
+      "title": "Memory Breakdown",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 6 },
+      "datasource": { "type": "prometheus", "uid": "" },
+      "fieldConfig": { "defaults": { "unit": "bytes" }, "overrides": [] },
+      "options": { "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "expr": "node_memory_MemTotal_bytes", "legendFormat": "Total" },
+        { "expr": "node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes", "legendFormat": "Used" },
+        { "expr": "node_memory_MemAvailable_bytes", "legendFormat": "Available" },
+        { "expr": "node_memory_Cached_bytes", "legendFormat": "Cached" },
+        { "expr": "node_memory_Buffers_bytes", "legendFormat": "Buffers" }
+      ]
+    },
+    {
+      "title": "Network Traffic (eth0)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 14 },
+      "datasource": { "type": "prometheus", "uid": "" },
+      "fieldConfig": { "defaults": { "unit": "Bps" }, "overrides": [] },
+      "targets": [
+        { "expr": "rate(node_network_receive_bytes_total{device=\"eth0\"}[5m])", "legendFormat": "Received" },
+        { "expr": "rate(node_network_transmit_bytes_total{device=\"eth0\"}[5m])", "legendFormat": "Transmitted" }
+      ]
+    },
+    {
+      "title": "Disk I/O",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 14 },
+      "datasource": { "type": "prometheus", "uid": "" },
+      "fieldConfig": { "defaults": { "unit": "Bps" }, "overrides": [] },
+      "targets": [
+        { "expr": "rate(node_disk_read_bytes_total[5m])", "legendFormat": "Read {{ device }}" },
+        { "expr": "rate(node_disk_written_bytes_total[5m])", "legendFormat": "Write {{ device }}" }
+      ]
     }
   ],
-  "refresh": "10s",
   "schemaVersion": 39,
-  "tags": ["docker", "host", "monitoring"],
-  "templating": {
-    "list": [
-      {
-        "current": { "selected": false, "text": "Prometheus", "value": "Prometheus" },
-        "hide": 0,
-        "includeAll": false,
-        "label": "Datasource",
-        "multi": false,
-        "name": "DS_PROMETHEUS",
-        "options": [],
-        "query": "prometheus",
-        "refresh": 1,
-        "regex": "",
-        "skipUrlSync": false,
-        "type": "datasource"
-      },
-      {
-        "current": { "selected": true, "text": "node-exporter:9100", "value": "node-exporter:9100" },
-        "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-        "definition": "label_values(node_uname_info, instance)",
-        "hide": 0,
-        "includeAll": false,
-        "label": "Instance",
-        "multi": false,
-        "name": "instance",
-        "options": [],
-        "query": { "query": "label_values(node_uname_info, instance)", "refId": "PrometheusVariableQueryEditor-VariableQuery" },
-        "refresh": 1,
-        "regex": "",
-        "skipUrlSync": false,
-        "sort": 0,
-        "type": "query"
-      }
-    ]
-  },
+  "tags": ["pens", "docker", "host"],
+  "templating": { "list": [] },
   "time": { "from": "now-1h", "to": "now" },
-  "timepicker": {},
-  "timezone": "browser",
   "title": "Docker Host Overview",
-  "uid": "docker-host-overview",
-  "version": 1,
-  "weekStart": ""
+  "uid": "pens-host-overview"
 }
 JSONEOF
 ```
 
-![Figure 2.3 — Membuat dashboard docker-host-overview.json (bagian 1)](images/placeholder.png)
-*Gambar 2.3: Screenshot hasil pembuatan `docker-host-overview.json` — dashboard Grafana untuk monitoring host (CPU, Memory, Disk, Network, System Overview).*
+<img src="images/2-3a.png" alt="Figure 2.3a — Dashboard Docker Host Overview" width="750">
+*Gambar 2.3a: Screenshot hasil pembuatan dashboard JSON `docker-host-overview.json` — bagian awal panel.*
 
-![Figure 2.4 — Membuat dashboard docker-host-overview.json (bagian 2)](images/placeholder.png)
-*Gambar 2.4: Screenshot lanjutan pembuatan `docker-host-overview.json` — panel CPU Usage dan Memory Usage dengan timeseries visualization.*
+<img src="images/2-3b.png" alt="Figure 2.3b — Docker Host Overview panels (lanjutan)" width="750">
+*Gambar 2.3b: Screenshot lanjutan panel Docker Host Overview — CPU, Memory, dan Disk gauge.*
 
-![Figure 2.5 — Membuat dashboard docker-host-overview.json (bagian 3)](images/placeholder.png)
-*Gambar 2.5: Screenshot lanjutan pembuatan `docker-host-overview.json` — stat cards (Uptime, CPU Cores, Total RAM, Total Disk) dan templating variables.*
+<img src="images/2-3c.png" alt="Figure 2.3c — Docker Host Overview time-series" width="750">
+*Gambar 2.3c: Screenshot panel time-series CPU Usage Over Time dan Memory Breakdown.*
 
-#### 2.4 Buat dashboard `grafana/dashboards/container-metrics.json`
+#### 2.4 Buat Dashboard JSON: Container Metrics
 
 ```bash
 cat > grafana/dashboards/container-metrics.json << 'JSONEOF'
 {
-  "annotations": {
-    "list": [
-      {
-        "builtIn": 1,
-        "datasource": { "type": "datasource", "uid": "grafana" },
-        "enable": true,
-        "hide": true,
-        "iconColor": "rgba(0, 211, 255, 1)",
-        "name": "Annotations & Alerts",
-        "target": { "limit": 100, "matchAny": false, "tags": [], "type": "dashboard" },
-        "type": "dashboard"
-      }
-    ]
-  },
+  "annotations": { "list": [] },
   "editable": true,
-  "fiscalYearStartMonth": 0,
-  "graphTooltip": 0,
-  "id": null,
-  "links": [],
   "panels": [
     {
-      "collapsed": false,
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
-      "id": 100,
-      "panels": [],
-      "title": "Container CPU Usage",
-      "type": "row"
+      "title": "Running Containers",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "" },
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "steps": [{ "color": "green", "value": null }] } }, "overrides": [] },
+      "targets": [{ "expr": "count(container_last_seen{name!=\"\"})", "legendFormat": "Containers" }]
     },
     {
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-      "fieldConfig": {
-        "defaults": {
-          "color": { "mode": "palette-classic" },
-          "custom": {
-            "axisBorderShow": false,
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisLabel": "",
-            "axisPlacement": "auto",
-            "barAlignment": 0,
-            "drawStyle": "line",
-            "fillOpacity": 10,
-            "gradientMode": "none",
-            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
-            "insertNulls": false,
-            "lineInterpolation": "linear",
-            "lineWidth": 2,
-            "pointSize": 5,
-            "scaleDistribution": { "type": "linear" },
-            "showPoints": "never",
-            "spanNulls": false,
-            "stacking": { "group": "A", "mode": "none" },
-            "thresholdsStyle": { "mode": "off" }
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              { "color": "green", "value": null },
-              { "color": "red", "value": 80 }
-            ]
-          },
-          "unit": "percent"
-        },
-        "overrides": []
-      },
-      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 1 },
-      "id": 1,
-      "options": {
-        "legend": { "calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true },
-        "tooltip": { "mode": "multi", "sort": "desc" }
-      },
-      "targets": [
-        {
-          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-          "expr": "sum(rate(container_cpu_usage_seconds_total{name=~\"$container\"}[$__rate_interval])) by (name) * 100",
-          "legendFormat": "{{ name }}",
-          "refId": "A"
-        }
-      ],
+      "title": "Total Container CPU Usage",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "" },
+      "fieldConfig": { "defaults": { "unit": "percent", "thresholds": { "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 80 }] } }, "overrides": [] },
+      "targets": [{ "expr": "sum(rate(container_cpu_usage_seconds_total{name!=\"\"}[5m])) * 100", "legendFormat": "Total CPU" }]
+    },
+    {
+      "title": "Total Container Memory",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "" },
+      "fieldConfig": { "defaults": { "unit": "bytes", "thresholds": { "steps": [{ "color": "green", "value": null }] } }, "overrides": [] },
+      "targets": [{ "expr": "sum(container_memory_usage_bytes{name!=\"\"})", "legendFormat": "Total Memory" }]
+    },
+    {
+      "title": "Prometheus Alerts Active",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "" },
+      "fieldConfig": { "defaults": { "thresholds": { "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 1 }] } }, "overrides": [] },
+      "targets": [{ "expr": "count(ALERTS{alertstate=\"firing\"}) OR vector(0)", "legendFormat": "Firing" }]
+    },
+    {
       "title": "CPU Usage per Container",
-      "type": "timeseries"
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 4 },
+      "datasource": { "type": "prometheus", "uid": "" },
+      "fieldConfig": { "defaults": { "unit": "percent" }, "overrides": [] },
+      "targets": [{ "expr": "rate(container_cpu_usage_seconds_total{name!=\"\"}[5m]) * 100", "legendFormat": "{{ name }}" }]
     },
     {
-      "collapsed": false,
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 11 },
-      "id": 101,
-      "panels": [],
-      "title": "Container Memory Usage",
-      "type": "row"
-    },
-    {
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-      "fieldConfig": {
-        "defaults": {
-          "color": { "mode": "palette-classic" },
-          "custom": {
-            "axisBorderShow": false,
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisLabel": "",
-            "axisPlacement": "auto",
-            "barAlignment": 0,
-            "drawStyle": "line",
-            "fillOpacity": 10,
-            "gradientMode": "none",
-            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
-            "insertNulls": false,
-            "lineInterpolation": "linear",
-            "lineWidth": 2,
-            "pointSize": 5,
-            "scaleDistribution": { "type": "linear" },
-            "showPoints": "never",
-            "spanNulls": false,
-            "stacking": { "group": "A", "mode": "none" },
-            "thresholdsStyle": { "mode": "off" }
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              { "color": "green", "value": null },
-              { "color": "red", "value": 80 }
-            ]
-          },
-          "unit": "bytes"
-        },
-        "overrides": []
-      },
-      "gridPos": { "h": 10, "w": 12, "x": 0, "y": 12 },
-      "id": 2,
-      "options": {
-        "legend": { "calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true },
-        "tooltip": { "mode": "multi", "sort": "desc" }
-      },
-      "targets": [
-        {
-          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-          "expr": "container_memory_usage_bytes{name=~\"$container\"}",
-          "legendFormat": "{{ name }}",
-          "refId": "A"
-        }
-      ],
       "title": "Memory Usage per Container",
-      "type": "timeseries"
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 4 },
+      "datasource": { "type": "prometheus", "uid": "" },
+      "fieldConfig": { "defaults": { "unit": "bytes" }, "overrides": [] },
+      "targets": [{ "expr": "container_memory_usage_bytes{name!=\"\"}", "legendFormat": "{{ name }}" }]
     },
     {
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-      "fieldConfig": {
-        "defaults": {
-          "color": { "mode": "palette-classic" },
-          "custom": {
-            "axisBorderShow": false,
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisLabel": "",
-            "axisPlacement": "auto",
-            "barAlignment": 0,
-            "drawStyle": "line",
-            "fillOpacity": 10,
-            "gradientMode": "none",
-            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
-            "insertNulls": false,
-            "lineInterpolation": "linear",
-            "lineWidth": 2,
-            "pointSize": 5,
-            "scaleDistribution": { "type": "linear" },
-            "showPoints": "never",
-            "spanNulls": false,
-            "stacking": { "group": "A", "mode": "none" },
-            "thresholdsStyle": { "mode": "off" }
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              { "color": "green", "value": null },
-              { "color": "red", "value": 80 }
-            ]
-          },
-          "unit": "bytes"
-        },
-        "overrides": []
-      },
-      "gridPos": { "h": 10, "w": 12, "x": 12, "y": 12 },
-      "id": 3,
-      "options": {
-        "legend": { "calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true },
-        "tooltip": { "mode": "multi", "sort": "desc" }
-      },
-      "targets": [
-        {
-          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-          "expr": "container_memory_working_set_bytes{name=~\"$container\"}",
-          "legendFormat": "{{ name }} - Working Set",
-          "refId": "A"
-        }
-      ],
-      "title": "Memory Working Set per Container",
-      "type": "timeseries"
+      "title": "Container Network RX",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 12 },
+      "datasource": { "type": "prometheus", "uid": "" },
+      "fieldConfig": { "defaults": { "unit": "Bps" }, "overrides": [] },
+      "targets": [{ "expr": "rate(container_network_receive_bytes_total{name!=\"\"}[5m])", "legendFormat": "{{ name }}" }]
     },
     {
-      "collapsed": false,
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 22 },
-      "id": 102,
-      "panels": [],
-      "title": "Container I/O & Network",
-      "type": "row"
-    },
-    {
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-      "fieldConfig": {
-        "defaults": {
-          "color": { "mode": "palette-classic" },
-          "custom": {
-            "axisBorderShow": false,
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisLabel": "",
-            "axisPlacement": "auto",
-            "barAlignment": 0,
-            "drawStyle": "line",
-            "fillOpacity": 10,
-            "gradientMode": "none",
-            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
-            "insertNulls": false,
-            "lineInterpolation": "linear",
-            "lineWidth": 2,
-            "pointSize": 5,
-            "scaleDistribution": { "type": "linear" },
-            "showPoints": "never",
-            "spanNulls": false,
-            "stacking": { "group": "A", "mode": "none" },
-            "thresholdsStyle": { "mode": "off" }
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              { "color": "green", "value": null }
-            ]
-          },
-          "unit": "Bps"
-        },
-        "overrides": []
-      },
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 23 },
-      "id": 4,
-      "options": {
-        "legend": { "calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true },
-        "tooltip": { "mode": "multi", "sort": "desc" }
-      },
-      "targets": [
-        {
-          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-          "expr": "sum(rate(container_network_receive_bytes_total{name=~\"$container\"}[$__rate_interval])) by (name)",
-          "legendFormat": "{{ name }} - RX",
-          "refId": "A"
-        },
-        {
-          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-          "expr": "sum(rate(container_network_transmit_bytes_total{name=~\"$container\"}[$__rate_interval])) by (name)",
-          "legendFormat": "{{ name }} - TX",
-          "refId": "B"
-        }
-      ],
-      "title": "Network Traffic per Container",
-      "type": "timeseries"
-    },
-    {
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-      "fieldConfig": {
-        "defaults": {
-          "color": { "mode": "thresholds" },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              { "color": "green", "value": null }
-            ]
-          },
-          "unit": "none"
-        },
-        "overrides": []
-      },
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 23 },
-      "id": 5,
-      "options": {
-        "displayMode": "gradient",
-        "maxVizHeight": 300,
-        "minVizHeight": 16,
-        "minVizWidth": 8,
-        "namePlacement": "auto",
-        "orientation": "horizontal",
-        "reduceOptions": {
-          "calcs": ["lastNotNull"],
-          "fields": "",
-          "values": false
-        },
-        "showUnfilled": true,
-        "sizing": "auto",
-        "valueMode": "color"
-      },
-      "pluginVersion": "10.0.0",
-      "targets": [
-        {
-          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-          "expr": "count(count(container_last_seen{name=~\"$container\"}) by (name))",
-          "legendFormat": "Running Containers",
-          "refId": "A"
-        }
-      ],
-      "title": "Active Containers",
-      "type": "bargauge"
+      "title": "Container Network TX",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 12 },
+      "datasource": { "type": "prometheus", "uid": "" },
+      "fieldConfig": { "defaults": { "unit": "Bps" }, "overrides": [] },
+      "targets": [{ "expr": "rate(container_network_transmit_bytes_total{name!=\"\"}[5m])", "legendFormat": "{{ name }}" }]
     }
   ],
-  "refresh": "10s",
   "schemaVersion": 39,
-  "tags": ["docker", "container", "cadvisor"],
-  "templating": {
-    "list": [
-      {
-        "current": { "selected": false, "text": "Prometheus", "value": "Prometheus" },
-        "hide": 0,
-        "includeAll": false,
-        "label": "Datasource",
-        "multi": false,
-        "name": "DS_PROMETHEUS",
-        "options": [],
-        "query": "prometheus",
-        "refresh": 1,
-        "regex": "",
-        "skipUrlSync": false,
-        "type": "datasource"
-      },
-      {
-        "current": { "selected": true, "text": "All", "value": "$__all" },
-        "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-        "definition": "label_values(container_last_seen, name)",
-        "hide": 0,
-        "includeAll": true,
-        "label": "Container",
-        "multi": true,
-        "name": "container",
-        "options": [],
-        "query": { "query": "label_values(container_last_seen, name)", "refId": "PrometheusVariableQueryEditor-VariableQuery" },
-        "refresh": 1,
-        "regex": "",
-        "skipUrlSync": false,
-        "sort": 0,
-        "type": "query"
-      }
-    ]
-  },
+  "tags": ["pens", "docker", "containers"],
   "time": { "from": "now-1h", "to": "now" },
-  "timepicker": {},
-  "timezone": "browser",
   "title": "Container Metrics",
-  "uid": "container-metrics",
-  "version": 1,
-  "weekStart": ""
+  "uid": "pens-container-metrics"
 }
 JSONEOF
 ```
 
-![Figure 2.6 — Membuat dashboard container-metrics.json](images/placeholder.png)
-*Gambar 2.6: Screenshot hasil pembuatan `container-metrics.json` — dashboard Grafana untuk monitoring container (CPU, Memory, Network, Active Containers) dari metric cAdvisor.*
+<img src="images/2-4.png" alt="Figure 2.4 — Dashboard Container Metrics" width="750">
+*Gambar 2.4: Screenshot hasil pembuatan dashboard JSON `container-metrics.json`.*
 
-#### 2.5 Buat dashboard `grafana/dashboards/log-analytics.json`
+#### 2.5 Buat Dashboard JSON: Log Analytics (PostgreSQL)
 
 ```bash
 cat > grafana/dashboards/log-analytics.json << 'JSONEOF'
 {
-  "annotations": {
-    "list": [
-      {
-        "builtIn": 1,
-        "datasource": { "type": "datasource", "uid": "grafana" },
-        "enable": true,
-        "hide": true,
-        "iconColor": "rgba(0, 211, 255, 1)",
-        "name": "Annotations & Alerts",
-        "target": { "limit": 100, "matchAny": false, "tags": [], "type": "dashboard" },
-        "type": "dashboard"
-      }
-    ]
-  },
+  "annotations": { "list": [] },
   "editable": true,
-  "fiscalYearStartMonth": 0,
-  "graphTooltip": 0,
-  "id": null,
-  "links": [],
   "panels": [
     {
-      "collapsed": false,
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
-      "id": 100,
-      "panels": [],
-      "title": "Log Overview",
-      "type": "row"
+      "title": "Total Logs (All Time)",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 0 },
+      "datasource": { "type": "postgres", "uid": "" },
+      "fieldConfig": { "defaults": { "thresholds": { "steps": [{ "color": "blue", "value": null }] } }, "overrides": [] },
+      "targets": [{ "rawSql": "SELECT COUNT(*) AS total FROM logs.fluentbit;", "format": "table" }]
     },
     {
-      "datasource": { "type": "postgres", "uid": "${DS_POSTGRES}" },
-      "fieldConfig": {
-        "defaults": {
-          "color": { "mode": "palette-classic" },
-          "custom": {
-            "axisBorderShow": false,
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisLabel": "",
-            "axisPlacement": "auto",
-            "barAlignment": 0,
-            "drawStyle": "bars",
-            "fillOpacity": 80,
-            "gradientMode": "none",
-            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
-            "insertNulls": false,
-            "lineInterpolation": "linear",
-            "lineWidth": 1,
-            "pointSize": 5,
-            "scaleDistribution": { "type": "linear" },
-            "showPoints": "never",
-            "spanNulls": false,
-            "stacking": { "group": "A", "mode": "none" },
-            "thresholdsStyle": { "mode": "off" }
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              { "color": "green", "value": null }
-            ]
-          },
-          "unit": "none"
-        },
-        "overrides": []
-      },
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 1 },
-      "id": 1,
-      "options": {
-        "legend": { "calcs": [], "displayMode": "table", "placement": "bottom", "showLegend": true },
-        "tooltip": { "mode": "multi", "sort": "none" }
-      },
-      "targets": [
-        {
-          "datasource": { "type": "postgres", "uid": "${DS_POSTGRES}" },
-          "format": "table",
-          "rawSql": "SELECT\n  $__timeGroupAlias(timestamp, $__interval),\n  level AS metric,\n  COUNT(*) AS value\nFROM container_logs\nWHERE $__timeFilter(timestamp)\nGROUP BY 1, 2\nORDER BY 1",
-          "refId": "A"
-        }
-      ],
-      "title": "Log Volume by Level",
-      "type": "timeseries"
+      "title": "Errors Last Hour",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 0 },
+      "datasource": { "type": "postgres", "uid": "" },
+      "fieldConfig": { "defaults": { "thresholds": { "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 10 }] } }, "overrides": [] },
+      "targets": [{ "rawSql": "SELECT COUNT(*) AS errors FROM logs.fluentbit WHERE data->>'log' IS NOT NULL AND LEFT(TRIM(data->>'log'),1)='{' AND (data->>'log')::jsonb->>'level' IN ('ERROR','CRITICAL') AND time > NOW() - INTERVAL '1 hour';", "format": "table" }]
     },
     {
-      "datasource": { "type": "postgres", "uid": "${DS_POSTGRES}" },
-      "fieldConfig": {
-        "defaults": {
-          "color": { "mode": "thresholds" },
-          "mappings": [
-            { "options": { "ERROR": { "color": "red", "index": 0 }, "INFO": { "color": "green", "index": 1 }, "WARN": { "color": "orange", "index": 2 } }, "type": "value" }
-          ],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              { "color": "green", "value": null }
-            ]
-          },
-          "unit": "none"
-        },
-        "overrides": []
-      },
-      "gridPos": { "h": 8, "w": 6, "x": 12, "y": 1 },
-      "id": 2,
-      "options": {
-        "displayLabels": ["percent", "name"],
-        "legend": { "displayMode": "table", "placement": "right", "showLegend": true, "values": ["value", "percent"] },
-        "pieType": "donut",
-        "reduceOptions": {
-          "calcs": ["lastNotNull"],
-          "fields": "",
-          "values": false
-        },
-        "tooltip": { "mode": "single", "sort": "none" }
-      },
-      "targets": [
-        {
-          "datasource": { "type": "postgres", "uid": "${DS_POSTGRES}" },
-          "format": "table",
-          "rawSql": "SELECT\n  level,\n  COUNT(*) AS value\nFROM container_logs\nWHERE $__timeFilter(timestamp)\nGROUP BY level\nORDER BY value DESC",
-          "refId": "A"
-        }
-      ],
+      "title": "Log Volume per Minute",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 4 },
+      "datasource": { "type": "postgres", "uid": "" },
+      "targets": [{ "rawSql": "SELECT date_trunc('minute', time) AS time, COUNT(*) AS count FROM logs.fluentbit WHERE $__timeFilter(time) GROUP BY 1 ORDER BY 1;", "format": "time_series" }]
+    },
+    {
       "title": "Log Level Distribution",
-      "type": "piechart"
+      "type": "piechart",
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 12 },
+      "datasource": { "type": "postgres", "uid": "" },
+      "targets": [{ "rawSql": "SELECT (data->>'log')::jsonb->>'level' AS metric, COUNT(*) AS value FROM logs.fluentbit WHERE time > NOW() - INTERVAL '1 hour' AND data->>'log' IS NOT NULL AND LEFT(TRIM(data->>'log'),1)='{' GROUP BY metric ORDER BY value DESC;", "format": "table" }]
     },
     {
-      "datasource": { "type": "postgres", "uid": "${DS_POSTGRES}" },
-      "fieldConfig": {
-        "defaults": {
-          "color": { "mode": "thresholds" },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              { "color": "green", "value": null },
-              { "color": "orange", "value": 10 },
-              { "color": "red", "value": 50 }
-            ]
-          },
-          "unit": "none"
-        },
-        "overrides": []
-      },
-      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 1 },
-      "id": 3,
-      "options": {
-        "colorMode": "value",
-        "graphMode": "area",
-        "justifyMode": "auto",
-        "orientation": "auto",
-        "percentChangeColorMode": "standard",
-        "reduceOptions": {
-          "calcs": ["lastNotNull"],
-          "fields": "",
-          "values": false
-        },
-        "showPercentChange": false,
-        "textMode": "auto",
-        "wideLayout": true
-      },
-      "targets": [
-        {
-          "datasource": { "type": "postgres", "uid": "${DS_POSTGRES}" },
-          "format": "table",
-          "rawSql": "SELECT COUNT(*) AS value FROM container_logs WHERE $__timeFilter(timestamp)",
-          "refId": "A"
-        }
-      ],
-      "title": "Total Logs",
-      "type": "stat"
+      "title": "Logs per Container",
+      "type": "barchart",
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 12 },
+      "datasource": { "type": "postgres", "uid": "" },
+      "targets": [{ "rawSql": "SELECT tag AS metric, COUNT(*) AS value FROM logs.fluentbit WHERE time > NOW() - INTERVAL '1 hour' GROUP BY tag ORDER BY value DESC;", "format": "table" }]
     },
     {
-      "datasource": { "type": "postgres", "uid": "${DS_POSTGRES}" },
-      "fieldConfig": {
-        "defaults": {
-          "color": { "mode": "thresholds" },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              { "color": "red", "value": null },
-              { "color": "green", "value": 1 }
-            ]
-          },
-          "unit": "none"
-        },
-        "overrides": []
-      },
-      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 5 },
-      "id": 4,
-      "options": {
-        "colorMode": "value",
-        "graphMode": "area",
-        "justifyMode": "auto",
-        "orientation": "auto",
-        "percentChangeColorMode": "standard",
-        "reduceOptions": {
-          "calcs": ["lastNotNull"],
-          "fields": "",
-          "values": false
-        },
-        "showPercentChange": false,
-        "textMode": "auto",
-        "wideLayout": true
-      },
-      "targets": [
-        {
-          "datasource": { "type": "postgres", "uid": "${DS_POSTGRES}" },
-          "format": "table",
-          "rawSql": "SELECT COUNT(*) AS value FROM container_logs WHERE level = 'ERROR' AND $__timeFilter(timestamp)",
-          "refId": "A"
-        }
-      ],
-      "title": "Error Count",
-      "type": "stat"
-    },
-    {
-      "collapsed": false,
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 9 },
-      "id": 101,
-      "panels": [],
-      "title": "Recent Logs",
-      "type": "row"
-    },
-    {
-      "datasource": { "type": "postgres", "uid": "${DS_POSTGRES}" },
-      "fieldConfig": {
-        "defaults": {
-          "color": { "mode": "thresholds" },
-          "custom": {
-            "align": "auto",
-            "cellOptions": { "type": "auto" },
-            "inspect": false
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              { "color": "green", "value": null }
-            ]
-          }
-        },
-        "overrides": [
-          {
-            "matcher": { "id": "byName", "options": "level" },
-            "properties": [
-              {
-                "id": "mappedColors",
-                "value": {
-                  "ERROR": { "color": "red", "index": 0 },
-                  "INFO": { "color": "green", "index": 1 },
-                  "WARN": { "color": "orange", "index": 2 }
-                }
-              }
-            ]
-          }
-        ]
-      },
-      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 10 },
-      "id": 5,
-      "options": {
-        "cellHeight": "sm",
-        "footer": { "countRows": false, "fields": "", "reducer": ["sum"], "show": false },
-        "showHeader": true
-      },
-      "pluginVersion": "10.0.0",
-      "targets": [
-        {
-          "datasource": { "type": "postgres", "uid": "${DS_POSTGRES}" },
-          "format": "table",
-          "rawSql": "SELECT\n  timestamp,\n  container_name,\n  level,\n  message\nFROM container_logs\nWHERE $__timeFilter(timestamp)\nORDER BY timestamp DESC\nLIMIT 100",
-          "refId": "A"
-        }
-      ],
-      "title": "Recent Log Entries",
-      "type": "table"
+      "title": "Recent Errors & Critical",
+      "type": "table",
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 12 },
+      "datasource": { "type": "postgres", "uid": "" },
+      "targets": [{ "rawSql": "SELECT to_char(time, 'HH24:MI:SS') AS time, REPLACE(data->>'container_name','/','') AS container, (data->>'log')::jsonb->>'level' AS level, LEFT((data->>'log')::jsonb->>'message',120) AS message FROM logs.fluentbit WHERE data->>'log' IS NOT NULL AND LEFT(TRIM(data->>'log'),1)='{' AND (data->>'log')::jsonb->>'level' IN ('ERROR','CRITICAL') ORDER BY time DESC LIMIT 20;", "format": "table" }]
     }
   ],
-  "refresh": "30s",
   "schemaVersion": 39,
-  "tags": ["logs", "fluent-bit", "postgres"],
-  "templating": {
-    "list": [
-      {
-        "current": { "selected": false, "text": "PostgreSQL", "value": "PostgreSQL" },
-        "hide": 0,
-        "includeAll": false,
-        "label": "Datasource",
-        "multi": false,
-        "name": "DS_POSTGRES",
-        "options": [],
-        "query": "postgres",
-        "refresh": 1,
-        "regex": "",
-        "skipUrlSync": false,
-        "type": "datasource"
-      }
-    ]
-  },
+  "tags": ["pens", "logs", "postgresql"],
   "time": { "from": "now-1h", "to": "now" },
-  "timepicker": {},
-  "timezone": "browser",
-  "title": "Log Analytics",
-  "uid": "log-analytics",
-  "version": 1,
-  "weekStart": ""
+  "title": "Log Analytics (PostgreSQL)",
+  "uid": "pens-log-analytics"
 }
 JSONEOF
 ```
 
-![Figure 2.7 — Membuat dashboard log-analytics.json](images/placeholder.png)
-*Gambar 2.7: Screenshot hasil pembuatan `log-analytics.json` — dashboard Grafana untuk analisis log dari PostgreSQL (log volume, level distribution, recent entries).*
+<img src="images/2-5.png" alt="Figure 2.5 — Dashboard Log Analytics" width="750">
+*Gambar 2.5: Screenshot hasil pembuatan dashboard JSON `log-analytics.json`.*
 
 ---
 
-### Langkah 3: Aplikasi Flask dengan Prometheus Metrics
-
-#### 3.1 Buat `app/requirements.txt`
+### Langkah 3: Buat Flask App dengan Prometheus Metrics
 
 ```bash
 cat > app/requirements.txt << 'EOF'
 flask==3.1.*
+psycopg2-binary==2.9.*
 prometheus-client==0.21.*
 EOF
 ```
 
-![Figure 3.1 — Membuat file requirements.txt](images/placeholder.png)
-*Gambar 3.1: Screenshot hasil pembuatan `app/requirements.txt` — berisi Flask dan prometheus-client.*
-
-#### 3.2 Buat `app/app.py`
+<img src="images/3-1.png" alt="Figure 3.1 — Requirements Flask" width="600">
+*Gambar 3.1: Screenshot hasil pembuatan `app/requirements.txt`.*
 
 ```bash
 cat > app/app.py << 'PYEOF'
-import time
-import random
-import logging
-from flask import Flask, jsonify, request
-from prometheus_client import Counter, Histogram, Gauge, generate_latest, CONTENT_TYPE_LATEST
-from prometheus_client import make_wsgi_app
-from werkzeug.middleware.dispatcher import DispatcherMiddleware
+"""Flask app dengan Prometheus metrics endpoint dan structured logging."""
 
-# Konfigurasi logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s [%(levelname)s] %(message)s',
-    datefmt='%Y-%m-%d %H:%M:%S'
-)
-logger = logging.getLogger(__name__)
+import os, json, socket, datetime, logging, sys, time
+from flask import Flask, jsonify, request, Response
+import psycopg2
+from prometheus_client import Counter, Histogram, Gauge, generate_latest, CONTENT_TYPE_LATEST
 
 app = Flask(__name__)
 
-# Prometheus Metrics
+# --- Prometheus Metrics ---
 REQUEST_COUNT = Counter(
-    'flask_http_requests_total',
-    'Total HTTP requests',
-    ['method', 'endpoint', 'status']
+    "flask_http_requests_total",
+    "Total HTTP requests",
+    ["method", "endpoint", "status"]
 )
 REQUEST_LATENCY = Histogram(
-    'flask_http_request_duration_seconds',
-    'HTTP request latency in seconds',
-    ['method', 'endpoint'],
-    buckets=[0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0]
+    "flask_http_request_duration_seconds",
+    "HTTP request latency",
+    ["method", "endpoint"],
+    buckets=[0.01, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0]
 )
-REQUEST_IN_PROGRESS = Gauge(
-    'flask_http_requests_in_progress',
-    'HTTP requests currently in progress',
-    ['method', 'endpoint']
+DB_CONNECTIONS = Gauge(
+    "flask_db_connections_active",
+    "Active database connections"
 )
-ERROR_COUNT = Counter(
-    'flask_http_errors_total',
-    'Total HTTP errors',
-    ['method', 'endpoint', 'status']
+LOG_COUNT = Gauge(
+    "flask_log_total_count",
+    "Total logs in PostgreSQL"
 )
 
-# Custom business metrics
-ITEM_COUNTER = Counter(
-    'flask_items_processed_total',
-    'Total items processed'
-)
-ACTIVE_USERS = Gauge(
-    'flask_active_users',
-    'Number of currently active users'
-)
+# --- Structured JSON Logging ---
+class JSONFormatter(logging.Formatter):
+    def format(self, record):
+        return json.dumps({
+            "timestamp": datetime.datetime.now().isoformat(),
+            "level": record.levelname,
+            "hostname": socket.gethostname(),
+            "service": "flask-app",
+            "message": record.getMessage()
+        })
+
+handler = logging.StreamHandler(sys.stdout)
+handler.setFormatter(JSONFormatter())
+app.logger.handlers = [handler]
+app.logger.setLevel(logging.INFO)
+
+DB = dict(host=os.environ.get("DB_HOST", "postgres-db"),
+          dbname=os.environ.get("DB_NAME", "labdb"),
+          user=os.environ.get("DB_USER", "labuser"),
+          password=os.environ.get("DB_PASS", "labpass123"))
 
 @app.before_request
-def before_request():
-    """Track in-progress requests"""
-    endpoint = request.endpoint or 'unknown'
-    REQUEST_IN_PROGRESS.labels(
-        method=request.method,
-        endpoint=endpoint
-    ).inc()
+def before():
+    request._start_time = time.time()
 
 @app.after_request
-def after_request(response):
-    """Track request metrics"""
-    endpoint = request.endpoint or 'unknown'
-    REQUEST_IN_PROGRESS.labels(
-        method=request.method,
-        endpoint=endpoint
-    ).dec()
-    REQUEST_COUNT.labels(
-        method=request.method,
-        endpoint=endpoint,
-        status=response.status_code
-    ).inc()
-    if response.status_code >= 400:
-        ERROR_COUNT.labels(
-            method=request.method,
-            endpoint=endpoint,
-            status=response.status_code
-        ).inc()
+def after(response):
+    latency = time.time() - getattr(request, "_start_time", time.time())
+    endpoint = request.endpoint or "unknown"
+    REQUEST_COUNT.labels(request.method, endpoint, response.status_code).inc()
+    REQUEST_LATENCY.labels(request.method, endpoint).observe(latency)
     return response
 
-@app.route('/')
+@app.route("/")
 def index():
-    """Halaman utama"""
-    logger.info("Halaman utama diakses")
-    return jsonify({
-        "service": "Flask Monitoring App",
-        "version": "1.0.0",
-        "endpoints": [
-            "/",
-            "/api/health",
-            "/api/process",
-            "/api/simulate-load",
-            "/api/users",
-            "/metrics"
-        ]
-    })
+    app.logger.info(f"Index accessed from {request.remote_addr}")
+    return jsonify({"service": "flask-app", "status": "running",
+                    "hostname": socket.gethostname()})
 
-@app.route('/api/health')
-def health():
-    """Health check endpoint"""
-    logger.info("Health check")
-    return jsonify({
-        "status": "healthy",
-        "uptime": "ok"
-    })
-
-@app.route('/api/process')
-def process():
-    """Endpoint yang mensimulasikan pemrosesan data"""
-    ITEM_COUNTER.inc()
-    logger.info("Memproses item data")
-    processing_time = random.uniform(0.02, 0.5)
-    time.sleep(processing_time)
-
-    if random.random() < 0.1:  # 10% chance error
-        logger.error("Gagal memproses item data")
-        return jsonify({"error": "Processing failed", "details": "Simulated random error"}), 500
-
-    logger.info("Item berhasil diproses dalam {:.3f}s".format(processing_time))
-    return jsonify({
-        "status": "processed",
-        "processing_time": round(processing_time, 3),
-        "message": "Item processed successfully"
-    })
-
-@app.route('/api/simulate-load')
-def simulate_load():
-    """Endpoint untuk simulasi beban CPU/memory"""
-    duration = float(request.args.get('duration', '1'))
-    intensity = int(request.args.get('intensity', '1000000'))
-    logger.info("Simulasi CPU load selama {} detik, intensity {}".format(duration, intensity))
-
-    end_time = time.time() + duration
-    counter = 0
-    while time.time() < end_time:
-        counter += 1
-        _ = counter ** 0.5  # Operasi matematika ringan
-
-    logger.info("Simulasi load selesai, {} iterasi".format(counter))
-    return jsonify({
-        "status": "load_completed",
-        "iterations": counter,
-        "duration": duration
-    })
-
-@app.route('/api/users')
-def users():
-    """Endpoint user untuk testing metrics"""
-    ACTIVE_USERS.set(random.randint(10, 100))
-    logger.info("Cek user aktif: {}".format(ACTIVE_USERS._value.get()))
-    return jsonify({
-        "active_users": int(ACTIVE_USERS._value.get()),
-        "total_requests": int(REQUEST_COUNT._value.get())
-    })
-
-@app.route('/metrics')
+@app.route("/metrics")
 def metrics():
-    """Expose Prometheus metrics"""
-    return generate_latest(), 200, {'Content-Type': CONTENT_TYPE_LATEST}
+    """Prometheus metrics endpoint."""
+    try:
+        conn = psycopg2.connect(**DB); cur = conn.cursor()
+        cur.execute("SELECT COUNT(*) FROM logs.fluentbit")
+        LOG_COUNT.set(cur.fetchone()[0])
+        cur.execute("SELECT count(*) FROM pg_stat_activity WHERE datname = %s", (DB["dbname"],))
+        DB_CONNECTIONS.set(cur.fetchone()[0])
+        cur.close(); conn.close()
+    except Exception:
+        pass
+    return Response(generate_latest(), mimetype=CONTENT_TYPE_LATEST)
+
+@app.route("/api/health")
+def health():
+    try:
+        conn = psycopg2.connect(**DB); cur = conn.cursor()
+        cur.execute("SELECT version();")
+        ver = cur.fetchone()[0]; cur.close(); conn.close()
+        return jsonify({"status": "ok", "database": ver, "db_status": "connected"})
+    except Exception as e:
+        return jsonify({"status": "error", "db_status": str(e)}), 500
+
+@app.route("/api/logs/stats")
+def log_stats():
+    try:
+        conn = psycopg2.connect(**DB); cur = conn.cursor()
+        cur.execute("""SELECT (data->>'log')::jsonb->>'level' AS level, COUNT(*)
+                       FROM logs.fluentbit
+                       WHERE time > NOW() - INTERVAL '1 hour'
+                         AND data->>'log' IS NOT NULL
+                         AND LEFT(TRIM(data->>'log'),1) = '{'
+                       GROUP BY level ORDER BY count DESC""")
+        stats = [{"level": r[0], "count": r[1]} for r in cur.fetchall()]
+        cur.execute("SELECT COUNT(*) FROM logs.fluentbit")
+        total = cur.fetchone()[0]; cur.close(); conn.close()
+        return jsonify({"total_logs": total, "last_hour": stats})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 if __name__ == "__main__":
-    logger.info("Flask app starting on port 5050")
-    app.run(host="0.0.0.0", port=5050)
+    app.run(host="0.0.0.0", port=5000)
 PYEOF
 ```
 
-![Figure 3.2 — Membuat file app.py (bagian 1)](images/placeholder.png)
-*Gambar 3.2: Screenshot hasil pembuatan `app/app.py` bagian 1 — import library, definisi Prometheus metrics (Counter, Histogram, Gauge), dan before_request/after_request hooks.*
+<img src="images/3-2a.png" alt="Figure 3.2a — Flask app.py (bagian 1)" width="750">
+*Gambar 3.2a: Screenshot hasil pembuatan `app/app.py` — bagian awal dengan Prometheus metrics dan formatter.*
 
-![Figure 3.3 — Membuat file app.py (bagian 2)](images/placeholder.png)
-*Gambar 3.3: Screenshot hasil pembuatan `app/app.py` bagian 2 — definisi endpoint Flask (/api/health, /api/process, /api/simulate-load, /api/users, /metrics).*
-
-#### 3.3 Buat `app/Dockerfile`
+<img src="images/3-2b.png" alt="Figure 3.2b — Flask app.py (bagian 2)" width="750">
+*Gambar 3.2b: Screenshot lanjutan `app/app.py` — routes dan endpoint definition.*
 
 ```bash
 cat > app/Dockerfile << 'EOF'
 FROM python:3.11-slim
-
 WORKDIR /app
-
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
-
 COPY app.py .
-
-EXPOSE 5050
-
-HEALTHCHECK --interval=10s --timeout=5s --start-period=5s --retries=3 \
-  CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:5050/api/health')" || exit 1
-
-CMD ["python", "app.py"]
+EXPOSE 5000
+CMD ["python", "-u", "app.py"]
 EOF
 ```
 
-![Figure 3.4 — Membuat Dockerfile untuk Flask app](images/placeholder.png)
-*Gambar 3.4: Screenshot hasil pembuatan `app/Dockerfile` — menggunakan Python 3.11 slim, menginstall dependencies, dan Healthcheck ke /api/health.*
+<img src="images/3-3.png" alt="Figure 3.3 — Dockerfile Flask" width="700">
+*Gambar 3.3: Screenshot hasil pembuatan `app/Dockerfile`.*
 
 ---
 
-### Langkah 4: Konfigurasi Fluent Bit dan PostgreSQL
-
-#### 4.1 Buat file `fluent-bit.conf`
+### Langkah 4: Siapkan Fluent Bit, Log Generator, dan Init Script
 
 ```bash
-cat > fluent-bit.conf << 'EOF'
+# --- Fluent Bit ---
+cat > fluent-bit/fluent-bit.conf << 'EOF'
 [SERVICE]
-    Flush         5
-    Daemon        Off
-    Log_Level     info
-    Parsers_File  /fluent-bit/etc/parsers.conf
+    Flush 5
+    Daemon Off
+    Log_Level info
+    Parsers_File parsers.conf
 
 [INPUT]
-    Name          tail
-    Path          /var/lib/docker/containers/*/*.log
-    Parser        docker
-    Tag           docker.*
-    Refresh_Interval 5
-    Mem_Buf_Limit 5MB
-    Skip_Long_Lines On
-
-[INPUT]
-    Name          exec
-    Command       python3 /generator/generate_logs.py
-    Tag           generator.logs
-    Interval_Sec  10
-    Interval_NSec 0
-
-[FILTER]
-    Name          modify
-    Match         docker.*
-    Add           source fluent-bit
-
-[FILTER]
-    Name          parser
-    Match         docker.*
-    Key_Name      log
-    Parser        json_log
-    Reserve_Data  On
+    Name forward
+    Listen 0.0.0.0
+    Port 24224
 
 [OUTPUT]
-    Name          pgsql
-    Match         *
-    Host          postgres
-    Port          5432
-    User          loguser
-    Password      logpass123
-    Database      logdb
-    Table         container_logs
-    Timestamp_Key timestamp
-    Log_Level     info
+    Name pgsql
+    Match *
+    Host postgres-db
+    Port 5432
+    User labuser
+    Password labpass123
+    Database labdb
+    Table fluentbit
+    Schema logs
+    Timestamp_Key time
+    Async false
+    min_pool_size 1
+    max_pool_size 4
+
+[OUTPUT]
+    Name stdout
+    Match *
+    Format json_lines
 EOF
 ```
 
-![Figure 4.1 — Membuat file fluent-bit.conf](images/placeholder.png)
-*Gambar 4.1: Screenshot hasil pembuatan `fluent-bit.conf` — konfigurasi input (tail Docker logs + exec generator), filter (modify + parser), dan output ke PostgreSQL.*
-
-#### 4.2 Buat file generator
+<img src="images/4-1.png" alt="Figure 4.1 — Konfigurasi Fluent Bit" width="750">
+*Gambar 4.1: Screenshot hasil pembuatan `fluent-bit/fluent-bit.conf`.*
 
 ```bash
-mkdir -p generator
-```
+# --- Log Generator ---
+cat > generator/generator.py << 'PYEOF'
+import json, time, random, socket, datetime, os
 
-```bash
-cat > generator/generate_logs.py << 'PYEOF'
-#!/usr/bin/env python3
-"""Generator log untuk testing pipeline Fluent Bit -> PostgreSQL."""
-import random
-import json
-import sys
-from datetime import datetime, timezone
+HOSTNAME = socket.gethostname()
+INTERVAL = float(os.environ.get("LOG_INTERVAL", "3"))
 
-LEVELS = ["INFO", "INFO", "INFO", "INFO", "WARN", "WARN", "ERROR"]
-CONTAINERS = ["flask-app", "prometheus", "grafana", "cadvisor", "node-exporter"]
-MESSAGES = {
-    "INFO": [
-        "Request processed successfully in {:.3f}s",
-        "Health check passed",
-        "Container started successfully",
-        "Connection pool initialized",
-        "Cache refreshed, {} entries loaded",
-        "Background task completed",
-        "Configuration reloaded",
-        "Metric snapshot saved"
-    ],
-    "WARN": [
-        "High response time detected: {:.3f}s",
-        "Connection pool almost exhausted",
-        "Disk usage above 75%",
-        "Retry attempt {}/3 for external service",
-        "Memory usage approaching limit"
-    ],
-    "ERROR": [
-        "Connection timeout to database",
-        "Failed to process request: internal error",
-        "Disk write failed: no space left",
-        "Authentication failed for service account",
-        "OOM killer triggered on container"
-    ]
-}
+EVENTS = [
+    {"level": "INFO", "weight": 50, "msgs": [
+        "User login successful", "Page loaded in {ms}ms",
+        "API GET /api/users completed", "Health check passed"]},
+    {"level": "DEBUG", "weight": 20, "msgs": [
+        "DB query {ms}ms", "Cache hit key:product_{pid}"]},
+    {"level": "WARN", "weight": 15, "msgs": [
+        "Slow query {ms}ms", "Memory at {mem}%", "Rate limit near"]},
+    {"level": "ERROR", "weight": 10, "msgs": [
+        "DB connection timeout", "HTTP 500 on /api/checkout",
+        "Payment gateway error {code}"]},
+    {"level": "CRITICAL", "weight": 5, "msgs": [
+        "Connection pool exhausted", "OOM kill triggered"]}
+]
 
-for _ in range(random.randint(3, 8)):
-    level = random.choice(LEVELS)
-    container = random.choice(CONTAINERS)
-    msg_template = random.choice(MESSAGES[level])
+def pick():
+    total = sum(e["weight"] for e in EVENTS)
+    r = random.uniform(0, total); c = 0
+    for e in EVENTS:
+        c += e["weight"]
+        if r <= c: return e
+    return EVENTS[0]
 
-    if "{}" in msg_template:
-        if "{:.3f}" in msg_template:
-            message = msg_template.format(random.uniform(0.001, 5.0))
-        elif "{}/3" in msg_template:
-            message = msg_template.format(random.randint(1, 3))
-        elif "{} entries" in msg_template:
-            message = msg_template.format(random.randint(100, 5000))
-        else:
-            message = msg_template
-    else:
-        message = msg_template
-
-    log_entry = {
-        "level": level,
-        "container_name": container,
-        "message": message,
-        "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
-    }
-    print(json.dumps(log_entry))
-    sys.stdout.flush()
+while True:
+    e = pick(); msg = random.choice(e["msgs"]).format(
+        ms=random.randint(5,3000), pid=random.randint(1,500),
+        mem=random.randint(60,98), code=random.choice([400,500,502,503]))
+    print(json.dumps({"timestamp": datetime.datetime.now().isoformat(),
+                      "level": e["level"], "hostname": HOSTNAME,
+                      "service": "log-generator", "message": msg}), flush=True)
+    time.sleep(INTERVAL + random.uniform(-0.5, 0.5))
 PYEOF
 ```
 
-![Figure 4.2 — Membuat file generator generate_logs.py](images/placeholder.png)
-*Gambar 4.2: Screenshot hasil pembuatan `generator/generate_logs.py` — script Python yang menghasilkan sample log (INFO, WARN, ERROR) untuk berbagai container secara berkala.*
-
-#### 4.3 Buat file `init.sql`
-
 ```bash
-cat > init.sql << 'EOF'
-CREATE TABLE IF NOT EXISTS container_logs (
-    id SERIAL PRIMARY KEY,
-    timestamp TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    container_name VARCHAR(255),
-    level VARCHAR(10),
-    message TEXT,
-    source VARCHAR(100)
-);
-
-CREATE INDEX IF NOT EXISTS idx_container_logs_timestamp ON container_logs (timestamp DESC);
-CREATE INDEX IF NOT EXISTS idx_container_logs_level ON container_logs (level);
-CREATE INDEX IF NOT EXISTS idx_container_logs_container ON container_logs (container_name);
-
-COMMENT ON TABLE container_logs IS 'Container logs collected by Fluent Bit';
-COMMENT ON COLUMN container_logs.timestamp IS 'Timestamp saat log dihasilkan';
-COMMENT ON COLUMN container_logs.container_name IS 'Nama container sumber log';
-COMMENT ON COLUMN container_logs.level IS 'Level log (INFO, WARN, ERROR)';
-COMMENT ON COLUMN container_logs.message IS 'Isi pesan log';
-COMMENT ON COLUMN container_logs.source IS 'Sumber pipeline (fluent-bit, generator)';
+cat > generator/Dockerfile << 'EOF'
+FROM python:3.11-alpine
+WORKDIR /app
+COPY generator.py .
+CMD ["python", "-u", "generator.py"]
 EOF
 ```
 
-![Figure 4.3 — Membuat file init.sql](images/placeholder.png)
-*Gambar 4.3: Screenshot hasil pembuatan `init.sql` — SQL untuk membuat tabel `container_logs` dengan indeks timestamp, level, dan container_name di PostgreSQL.*
+<img src="images/4-2.png" alt="Figure 4.2 — Log generator" width="750">
+*Gambar 4.2: Screenshot hasil pembuatan `generator/generator.py` dan `generator/Dockerfile`.*
+
+```bash
+# --- Init SQL (dari Modul 5 -- schema sesuai Fluent Bit pgsql plugin) ---
+cat > init/01-logging-schema.sql << 'EOF'
+CREATE SCHEMA IF NOT EXISTS logs;
+
+-- Tabel: format sesuai Fluent Bit pgsql plugin (tag, time, data)
+CREATE TABLE IF NOT EXISTS logs.fluentbit (
+    id BIGSERIAL PRIMARY KEY,
+    tag VARCHAR(200),
+    time TIMESTAMP,
+    data JSONB
+);
+
+CREATE INDEX IF NOT EXISTS idx_fb_time ON logs.fluentbit(time);
+CREATE INDEX IF NOT EXISTS idx_fb_tag ON logs.fluentbit(tag);
+CREATE INDEX IF NOT EXISTS idx_fb_data ON logs.fluentbit USING GIN(data);
+
+-- View: log terbaru
+CREATE OR REPLACE VIEW logs.recent_logs AS
+SELECT id, to_char(time, 'YYYY-MM-DD HH24:MI:SS') AS time, tag,
+       REPLACE(data->>'container_name', '/', '') AS container,
+       data->>'source' AS source,
+       LEFT(data->>'log', 200) AS log_preview
+FROM logs.fluentbit ORDER BY time DESC LIMIT 100;
+
+-- View: structured JSON logs (parsed level & message)
+CREATE OR REPLACE VIEW logs.structured_logs AS
+SELECT id, time AS received_at, tag,
+       REPLACE(data->>'container_name', '/', '') AS container_name,
+       (data->>'log')::jsonb->>'level' AS log_level,
+       (data->>'log')::jsonb->>'message' AS message,
+       (data->>'log')::jsonb->>'service' AS service
+FROM logs.fluentbit
+WHERE data->>'log' IS NOT NULL AND LEFT(TRIM(data->>'log'), 1) = '{'
+ORDER BY time DESC;
+
+-- View: error summary
+CREATE OR REPLACE VIEW logs.error_summary AS
+SELECT REPLACE(data->>'container_name', '/', '') AS container_name,
+       (data->>'log')::jsonb->>'level' AS log_level,
+       COUNT(*) AS count, MAX(time) AS last_seen
+FROM logs.fluentbit
+WHERE data->>'log' IS NOT NULL AND LEFT(TRIM(data->>'log'), 1) = '{'
+  AND (data->>'log')::jsonb->>'level' IN ('ERROR', 'WARN', 'CRITICAL')
+GROUP BY 1, 2 ORDER BY count DESC;
+EOF
+```
+
+<img src="images/4-3.png" alt="Figure 4.3 — Init SQL schema" width="750">
+*Gambar 4.3: Screenshot hasil pembuatan `init/01-logging-schema.sql`.*
 
 ---
 
-### Langkah 5: Docker Compose Multi-Service (9 Services)
+### Langkah 5: Docker Compose — Full Monitoring Stack
 
 ```bash
 cat > docker-compose.yml << 'EOF'
 services:
-  # ========== 1. Prometheus ==========
+
+  # ============================================
+  # MONITORING LAYER
+  # ============================================
+
+  # --- Prometheus (Metrics TSDB) ---
   prometheus:
-    image: prom/prometheus:v3.3.0
+    image: prom/prometheus:latest
     container_name: prometheus
-    volumes:
-      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
-      - ./alert_rules.yml:/etc/prometheus/alert_rules.yml:ro
-      - prom-data:/prometheus
-    command:
-      - '--config.file=/etc/prometheus/prometheus.yml'
-      - '--storage.tsdb.path=/prometheus'
-      - '--storage.tsdb.retention.time=30d'
-      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
-      - '--web.console.templates=/usr/share/prometheus/consoles'
     ports:
       - "9090:9090"
-    networks:
-      - monitoring
-    restart: unless-stopped
-
-  # ========== 2. Alertmanager ==========
-  alertmanager:
-    image: prom/alertmanager:v0.28.0
-    container_name: alertmanager
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./prometheus/alert_rules.yml:/etc/prometheus/alert_rules.yml:ro
+      - prom-data:/prometheus
     command:
-      - '--config.file=/etc/alertmanager/config.yml'
-    volumes:
-      - ./alertmanager.yml:/etc/alertmanager/config.yml:ro
-    ports:
-      - "9093:9093"
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=7d"
+      - "--web.enable-lifecycle"
     networks:
-      - monitoring
+      - monitoring-net
     restart: unless-stopped
 
-  # ========== 3. Grafana ==========
-  grafana:
-    image: grafana/grafana:11.6.0
-    container_name: grafana
-    environment:
-      - GF_SECURITY_ADMIN_USER=admin
-      - GF_SECURITY_ADMIN_PASSWORD=admin
-      - GF_USERS_ALLOW_SIGN_UP=false
-      - GF_INSTALL_PLUGINS=
-    volumes:
-      - ./grafana/provisioning/datasources:/etc/grafana/provisioning/datasources:ro
-      - ./grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards:ro
-      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
-      - grafana-data:/var/lib/grafana
+  # --- Node Exporter (Host Metrics) ---
+  node-exporter:
+    image: prom/node-exporter:latest
+    container_name: node-exporter
     ports:
-      - "3000:3000"
+      - "9100:9100"
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro
+    command:
+      - "--path.procfs=/host/proc"
+      - "--path.sysfs=/host/sys"
+      - "--path.rootfs=/rootfs"
+      - "--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)"
     networks:
-      - monitoring
-    depends_on:
-      - prometheus
-      - postgres
+      - monitoring-net
     restart: unless-stopped
 
-  # ========== 4. cAdvisor ==========
+  # --- cAdvisor (Container Metrics) ---
   cadvisor:
-    image: gcr.io/cadvisor/cadvisor:v0.51.0
+    image: gcr.io/cadvisor/cadvisor:latest
     container_name: cadvisor
+    ports:
+      - "8081:8080"
     volumes:
       - /:/rootfs:ro
       - /var/run:/var/run:ro
       - /sys:/sys:ro
       - /var/lib/docker/:/var/lib/docker:ro
       - /dev/disk/:/dev/disk:ro
+    privileged: true
     devices:
       - /dev/kmsg
-    privileged: true
-    ports:
-      - "8080:8080"
     networks:
-      - monitoring
+      - monitoring-net
     restart: unless-stopped
 
-  # ========== 5. Node Exporter ==========
-  node-exporter:
-    image: prom/node-exporter:v1.9.1
-    container_name: node-exporter
-    volumes:
-      - /proc:/host/proc:ro
-      - /sys:/host/sys:ro
-      - /:/rootfs:ro
-    command:
-      - '--path.procfs=/host/proc'
-      - '--path.sysfs=/host/sys'
-      - '--path.rootfs=/rootfs'
-      - '--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)'
+  # --- Grafana (Visualization) ---
+  grafana:
+    image: grafana/grafana:latest
+    container_name: grafana
     ports:
-      - "9100:9100"
-    networks:
-      - monitoring
-    restart: unless-stopped
-
-  # ========== 6. PostgreSQL ==========
-  postgres:
-    image: postgres:16-alpine
-    container_name: log-db
+      - "3000:3000"
     environment:
-      POSTGRES_DB: logdb
-      POSTGRES_USER: loguser
-      POSTGRES_PASSWORD: logpass123
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin123
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/docker-host-overview.json
     volumes:
-      - ./init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
-      - pg-data:/var/lib/postgresql/data
-    ports:
-      - "5432:5432"
+      - grafana-data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
     networks:
-      - monitoring
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U loguser -d logdb"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
-      start_period: 10s
-    restart: unless-stopped
-
-  # ========== 7. Flask App ==========
-  flask-app:
-    build: ./app
-    container_name: flask-app
-    ports:
-      - "5050:5050"
-    networks:
-      - monitoring
-    restart: unless-stopped
-
-  # ========== 8. Fluent Bit ==========
-  fluent-bit:
-    image: fluent/fluent-bit:3.2.10
-    container_name: fluent-bit
-    volumes:
-      - ./fluent-bit.conf:/fluent-bit/etc/fluent-bit.conf:ro
-      - /var/lib/docker/containers:/var/lib/docker/containers:ro
-      - ./generator:/generator:ro
-    environment:
-      - TZ=Asia/Jakarta
-    ports:
-      - "2020:2020"
-    networks:
-      - monitoring
+      - monitoring-net
     depends_on:
-      postgres:
+      - prometheus
+      - postgres-db
+    restart: unless-stopped
+
+  # ============================================
+  # LOGGING LAYER (dari Modul 5)
+  # ============================================
+  fluent-bit:
+    image: fluent/fluent-bit:latest
+    container_name: fluent-bit
+    ports:
+      - "24224:24224"
+      - "24224:24224/udp"
+    volumes:
+      - ./fluent-bit/fluent-bit.conf:/fluent-bit/etc/fluent-bit.conf:ro
+      - ./fluent-bit/parsers.conf:/fluent-bit/etc/parsers.conf:ro
+    networks:
+      - monitoring-net
+    depends_on:
+      postgres-db:
         condition: service_healthy
     restart: unless-stopped
 
-  # ========== 9. Nginx Reverse Proxy ==========
-  nginx:
-    image: nginx:1.27-alpine
-    container_name: proxy-nginx
-    volumes:
-      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+  # ============================================
+  # DATA LAYER
+  # ============================================
+  postgres-db:
+    image: postgres:16-alpine
+    container_name: postgres-db
+    environment:
+      POSTGRES_DB: labdb
+      POSTGRES_USER: labuser
+      POSTGRES_PASSWORD: labpass123
+      TZ: Asia/Jakarta
     ports:
-      - "80:80"
+      - "5432:5432"
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+      - ./init:/docker-entrypoint-initdb.d:ro
     networks:
-      - monitoring
+      - monitoring-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U labuser -d labdb"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # ============================================
+  # APPLICATION LAYER
+  # ============================================
+  nginx-web:
+    image: nginx:alpine
+    container_name: nginx-web
+    ports:
+      - "8080:80"
+    networks:
+      - monitoring-net
+    logging:
+      driver: fluentd
+      options:
+        fluentd-address: "localhost:24224"
+        fluentd-async: "true"
+        tag: "docker.nginx"
     depends_on:
-      - flask-app
-      - grafana
-      - prometheus
+      - fluent-bit
+    restart: unless-stopped
+
+  flask-app:
+    build: ./app
+    container_name: flask-app
+    environment:
+      - DB_HOST=postgres-db
+      - DB_NAME=labdb
+      - DB_USER=labuser
+      - DB_PASS=labpass123
+    ports:
+      - "5000:5000"
+    networks:
+      - monitoring-net
+    logging:
+      driver: fluentd
+      options:
+        fluentd-address: "localhost:24224"
+        fluentd-async: "true"
+        tag: "docker.flask"
+    depends_on:
+      - fluent-bit
+      - postgres-db
+    restart: unless-stopped
+
+  log-generator:
+    build: ./generator
+    container_name: log-generator
+    environment:
+      - LOG_INTERVAL=3
+    networks:
+      - monitoring-net
+    logging:
+      driver: fluentd
+      options:
+        fluentd-address: "localhost:24224"
+        fluentd-async: "true"
+        tag: "docker.generator"
+    depends_on:
+      - fluent-bit
     restart: unless-stopped
 
 volumes:
@@ -2024,440 +1062,308 @@ volumes:
   pg-data:
 
 networks:
-  monitoring:
-    driver: bridge
+  monitoring-net:
 EOF
 ```
 
-![Figure 5.1 — Membuat docker-compose.yml (bagian 1: services 1-4)](images/placeholder.png)
-*Gambar 5.1: Screenshot hasil pembuatan `docker-compose.yml` bagian 1 — service prometheus, alertmanager, grafana, dan cadvisor beserta volume, network, dan environment.*
+<img src="images/5-1a.png" alt="Figure 5.1a — Docker Compose monitoring layer" width="750">
+*Gambar 5.1a: Screenshot `docker-compose.yml` — monitoring layer (Prometheus, Node Exporter, cAdvisor, Grafana).*
 
-![Figure 5.2 — Membuat docker-compose.yml (bagian 2: services 5-7)](images/placeholder.png)
-*Gambar 5.2: Screenshot hasil pembuatan `docker-compose.yml` bagian 2 — service node-exporter, postgres, dan flask-app dengan healthcheck dan build context.*
+<img src="images/5-1b.png" alt="Figure 5.1b — Docker Compose logging & data layer" width="750">
+*Gambar 5.1b: Screenshot `docker-compose.yml` — logging layer (Fluent Bit) dan data layer (PostgreSQL).*
 
-![Figure 5.3 — Membuat docker-compose.yml (bagian 3: services 8-9 + volumes/networks)](images/placeholder.png)
-*Gambar 5.3: Screenshot hasil pembuatan `docker-compose.yml` bagian 3 — service fluent-bit, nginx, volume definitions (prom-data, grafana-data, pg-data), dan network monitoring.*
+<img src="images/5-1c.png" alt="Figure 5.1c — Docker Compose application layer" width="750">
+*Gambar 5.1c: Screenshot `docker-compose.yml` — application layer (Nginx, Flask, Log Generator).*
 
 ---
 
-### Langkah 5b: Konfigurasi Pendukung
-
-#### Buat `alertmanager.yml`
+### Langkah 6: Deploy Full Stack
 
 ```bash
-cat > alertmanager.yml << 'EOF'
-global:
-  resolve_timeout: 5m
-
-route:
-  receiver: 'default-receiver'
-  group_by: ['alertname', 'severity']
-  group_wait: 10s
-  group_interval: 10s
-  repeat_interval: 1h
-
-receivers:
-  - name: 'default-receiver'
-    webhook_configs:
-      - url: 'http://localhost:8080/dummy-webhook'
-        send_resolved: true
-
-inhibit_rules:
-  - source_match:
-      severity: 'critical'
-    target_match:
-      severity: 'warning'
-    equal: ['alertname']
-EOF
+# Build dan jalankan seluruh stack (9 container)
+docker compose up --build -d
 ```
 
-#### Buat `nginx.conf`
+<img src="images/6-1.png" alt="Figure 6.1 — docker compose up --build -d" width="750">
+*Gambar 6.1: Screenshot hasil `docker compose up --build -d` — seluruh container berjalan.*
 
 ```bash
-cat > nginx.conf << 'EOF'
-server {
-    listen 80;
-
-    location /grafana/ {
-        proxy_pass http://grafana:3000/;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-    }
-
-    location /prometheus/ {
-        proxy_pass http://prometheus:9090/;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-    }
-
-    location /api/ {
-        proxy_pass http://flask-app:5050;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-    }
-
-    location / {
-        proxy_pass http://flask-app:5050;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-    }
-}
-EOF
-```
-
-#### Buat `generator/parsers.conf`
-
-```bash
-cat > generator/parsers.conf << 'EOF'
-[PARSER]
-    Name        docker
-    Format      json
-    Time_Key    time
-    Time_Format %Y-%m-%dT%H:%M:%S.%L
-    Time_Keep   On
-
-[PARSER]
-    Name        json_log
-    Format      json
-    Time_Key    timestamp
-    Time_Format %Y-%m-%d %H:%M:%S
-    Time_Keep   On
-EOF
-```
-
----
-
-### Langkah 6: Deploy Stack
-
-#### 6.1 Build dan jalankan semua service
-
-```bash
-# Build image Flask app dan pull semua image
-docker compose build
-
-# Jalankan semua service di background
-docker compose up -d
-```
-
-![Figure 6.1 — Docker compose up -d](images/placeholder.png)
-*Gambar 6.1: Screenshot hasil `docker compose up -d` — semua 9 service berhasil dijalankan di background.*
-
-#### 6.2 Cek status semua service
-
-```bash
-# Cek status container
+# Cek semua service
 docker compose ps
 ```
 
-![Figure 6.2 — Docker compose ps](images/placeholder.png)
-*Gambar 6.2: Screenshot hasil `docker compose ps` — menampilkan status semua 9 service (prometheus, alertmanager, grafana, cadvisor, node-exporter, postgres, flask-app, fluent-bit, nginx) dalam keadaan Up dan healthy.*
+<img src="images/6-2.png" alt="Figure 6.2 — docker compose ps" width="750">
+*Gambar 6.2: Screenshot hasil `docker compose ps` — 9 container dengan status Up.*
 
 ```bash
-# Cek log jika ada service yang bermasalah
-docker compose logs --tail=20
+# Tunggu 30 detik agar metrics terkumpul
+sleep 30
 ```
 
 ---
 
-### Langkah 7: Verifikasi Prometheus
+### Langkah 7: Verifikasi Setiap Komponen
 
-#### 7.1 Akses Prometheus UI
-
-Buka browser ke http://localhost:9090 atau http://<IP_VM>:9090.
-
-![Figure 7.1 — Prometheus Web UI](images/placeholder.png)
-*Gambar 7.1: Screenshot Prometheus Web UI di http://localhost:9090 — tampilan utama dengan Graph dan query editor.*
-
-#### 7.2 Cek targets via API
+#### 7.1 Verifikasi Prometheus
 
 ```bash
-# Cek status semua targets Prometheus via API
-curl -s http://localhost:9090/api/v1/targets | python3 -m json.tool
+# Akses Prometheus UI
+echo "Buka browser: http://localhost:9090"
 ```
 
-![Figure 7.2 — Curl Prometheus targets API (bagian 1)](images/placeholder.png)
-*Gambar 7.2: Screenshot hasil `curl http://localhost:9090/api/v1/targets` — menampilkan response JSON dengan status semua scrape targets (prometheus, node-exporter, cadvisor, flask-app).*
+<img src="images/7-1.png" alt="Figure 7.1 — Prometheus UI" width="600">
+*Gambar 7.1: Screenshot halaman utama Prometheus UI di http://localhost:9090.*
 
 ```bash
-# Filter hanya target yang UP
-curl -s http://localhost:9090/api/v1/targets | python3 -c "
-import json, sys
-data = json.load(sys.stdin)
-for t in data['data']['activeTargets']:
-    status = 'UP' if t['health'] == 'up' else 'DOWN'
-    print(f\"{status:5s} | {t['labels']['job']:20s} | {t['scrapeUrl']}\")
-"
+# Cek targets — harus semua UP
+curl -s http://localhost:9090/api/v1/targets | python3 -m json.tool | head -40
 ```
 
-![Figure 7.3 — Curl Prometheus targets API (bagian 2 — filtered)](images/placeholder.png)
-*Gambar 7.3: Screenshot hasil filtering targets — menampilkan status UP/DOWN untuk setiap job (prometheus, node-exporter, cadvisor, flask-app).*
+<img src="images/7-2a.png" alt="Figure 7.2a — Prometheus targets (daftar target)" width="750">
+*Gambar 7.2a: Screenshot hasil `curl` cek targets Prometheus — memperlihatkan daftar target scrape.*
 
-#### 7.3 Query PromQL — CPU Usage
-
-Buka tab **Graph** di Prometheus UI, masukkan query berikut, lalu klik **Execute**:
-
-```
-100 - (avg(rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100)
-```
-
-![Figure 7.4 — Query PromQL CPU Usage di Prometheus](images/placeholder.png)
-*Gambar 7.4: Screenshot hasil query `100 - (avg(rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100)` di Prometheus UI — grafik CPU usage host.*
-
-#### 7.4 Query PromQL — Memory Usage
-
-```
-(1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) * 100
-```
-
-![Figure 7.5 — Query PromQL Memory Usage di Prometheus](images/placeholder.png)
-*Gambar 7.5: Screenshot hasil query memory usage — grafik persentase penggunaan memory host.*
-
-#### 7.5 Query PromQL — Container Count
-
-```
-count(container_last_seen)
-```
-
-![Figure 7.6 — Query PromQL Container Count](images/placeholder.png)
-*Gambar 7.6: Screenshot hasil query `count(container_last_seen)` — menampilkan jumlah container yang terpantau oleh cAdvisor.*
-
-#### 7.6 Targets Status Page
-
-Buka **Status → Targets** di Prometheus UI untuk melihat semua target scrape.
-
-![Figure 7.7 — Prometheus Targets Status Page](images/placeholder.png)
-*Gambar 7.7: Screenshot halaman Status → Targets di Prometheus UI — menampilkan daftar semua scrape target beserta state (UP/DOWN), labels, last scrape, dan scrape duration.*
-
-#### 7.7 Node Exporter Metrics
+<img src="images/7-2b.png" alt="Figure 7.2b — Prometheus targets status" width="750">
+*Gambar 7.2b: Screenshot detail status targets Prometheus — semua endpoint UP dengan label masing-masing.*
 
 ```bash
-# Cek metric yang diexpose node-exporter
-curl -s http://localhost:9100/metrics | head -50
+# Test query PromQL via API
+# CPU usage
+curl -G http://localhost:9090/api/v1/query \
+  --data-urlencode 'query=100-(avg(rate(node_cpu_seconds_total{mode="idle"}[5m]))*100)' \
+  | python3 -m json.tool
 ```
 
-![Figure 7.8 — Curl node-exporter metrics](images/placeholder.png)
-*Gambar 7.8: Screenshot hasil `curl http://localhost:9100/metrics | head -50` — menampilkan 50 baris pertama metric dari node-exporter (CPU, memory, disk, network).*
-
-#### 7.8 Specific Node Exporter Metric
+<img src="images/7-3.png" alt="Figure 7.3 — Query CPU via API" width="700">
+*Gambar 7.3: Screenshot hasil query PromQL CPU usage via Prometheus API.*
 
 ```bash
-# Cek metric spesifik: available memory
-curl -s http://localhost:9100/metrics | grep node_memory_MemAvailable
+# Memory available
+curl -s "http://localhost:9090/api/v1/query?query=node_memory_MemAvailable_bytes" \
+  | python3 -m json.tool
 ```
 
-![Figure 7.9 — Specific metric node_memory_MemAvailable](images/placeholder.png)
-*Gambar 7.9: Screenshot hasil `curl http://localhost:9100/metrics | grep node_memory_MemAvailable` — menampilkan metric memory available dalam bytes.*
-
-#### 7.9 cAdvisor Web UI
-
-Buka browser ke http://localhost:8080 untuk melihat cAdvisor Web UI.
-
-![Figure 7.10 — cAdvisor Web UI](images/placeholder.png)
-*Gambar 7.10: Screenshot cAdvisor Web UI di http://localhost:8080 — menampilkan overview resource usage semua container Docker.*
-
-#### 7.10 cAdvisor Metrics Endpoint
+<img src="images/7-4.png" alt="Figure 7.4 — Query memory via API" width="700">
+*Gambar 7.4: Screenshot hasil query PromQL memory available via Prometheus API.*
 
 ```bash
-# Cek metric yang diexpose cAdvisor
-curl -s http://localhost:8080/metrics | grep container_memory_usage_bytes | head -20
+# Container count
+curl -G http://localhost:9090/api/v1/query \
+  --data-urlencode 'query=count(container_last_seen{name!=""})' \
+  | python3 -m json.tool
 ```
 
-![Figure 7.11 — cAdvisor metrics endpoint](images/placeholder.png)
-*Gambar 7.11: Screenshot hasil `curl http://localhost:8080/metrics` — menampilkan container_memory_usage_bytes untuk setiap container.*
+<img src="images/7-5.png" alt="Figure 7.5 — Query container count" width="700">
+*Gambar 7.5: Screenshot hasil query jumlah container via Prometheus API.*
 
-#### 7.11 Generate Traffic ke Flask App
+> Buka http://localhost:9090 → **Status → Targets** → pastikan semua target berstatus **UP**.
+
+<img src="images/7-6.png" alt="Figure 7.6 — Prometheus targets UP" width="700">
+*Gambar 7.6: Screenshot Prometheus halaman Targets — semua target berstatus UP.*
+
+#### 7.2 Verifikasi Node Exporter
 
 ```bash
-# Generate traffic ke Flask app untuk menghasilkan metrics
-for i in $(seq 1 20); do
-  curl -s http://localhost:5050/api/process &
-  curl -s http://localhost:5050/api/health &
-done
-wait
-echo "Traffic generated!"
+# Cek metrik host langsung
+curl -s http://localhost:9100/metrics | head -30
 ```
 
-![Figure 7.12 — Generate traffic ke Flask app](images/placeholder.png)
-*Gambar 7.12: Screenshot hasil generate traffic — 40 request (20 process + 20 health) dikirim ke Flask app.*
+<img src="images/7-7.png" alt="Figure 7.7 — Node Exporter metrics" width="750">
+*Gambar 7.7: Screenshot hasil `curl http://localhost:9100/metrics` menampilkan metrik host.*
 
-#### 7.12 Verifikasi Flask Metrics di Prometheus
-
-Buka Prometheus UI dan query metric dari Flask app:
-
-**Query 1 — Total HTTP Requests:**
-```
-flask_http_requests_total
+```bash
+# Cek metrik spesifik
+curl -s http://localhost:9100/metrics | grep "node_cpu_seconds_total" | head -5
+curl -s http://localhost:9100/metrics | grep "node_memory_MemTotal_bytes"
+curl -s http://localhost:9100/metrics | grep "node_filesystem_size_bytes" | head -3
 ```
 
-![Figure 7.13 — Flask metrics: HTTP requests total](images/placeholder.png)
-*Gambar 7.13: Screenshot query `flask_http_requests_total` di Prometheus UI — menampilkan jumlah total HTTP request ke Flask app berdasarkan method, endpoint, dan status.*
+<img src="images/7-8.png" alt="Figure 7.8 — Metrik spesifik Node Exporter" width="700">
+*Gambar 7.8: Screenshot hasil query metrik spesifik CPU, memory, dan filesystem dari Node Exporter.*
 
-**Query 2 — Request Latency:**
-```
-histogram_quantile(0.95, rate(flask_http_request_duration_seconds_bucket[5m]))
-```
+#### 7.3 Verifikasi cAdvisor
 
-![Figure 7.14 — Flask metrics: Request latency p95](images/placeholder.png)
-*Gambar 7.14: Screenshot query `histogram_quantile(0.95, ...)` di Prometheus UI — menampilkan latency request persentil ke-95 untuk Flask app.*
-
-**Query 3 — Active Users:**
-```
-flask_active_users
+```bash
+# Akses cAdvisor UI
+echo "Buka browser: http://localhost:8081"
 ```
 
-![Figure 7.15 — Flask metrics: Active users](images/placeholder.png)
-*Gambar 7.15: Screenshot query `flask_active_users` di Prometheus UI — menampilkan jumlah active users dari Flask app (Gauge metric).*
+<img src="images/7-9.png" alt="Figure 7.9 — cAdvisor UI" width="500">
+*Gambar 7.9: Screenshot halaman cAdvisor di http://localhost:8081.*
+
+```bash
+# Cek metrik container
+curl -s http://localhost:8081/metrics | grep "container_memory_usage_bytes" | head -5
+curl -s http://localhost:8081/metrics | grep "container_cpu_usage_seconds_total" | head -5
+```
+
+<img src="images/7-10.png" alt="Figure 7.10 — cAdvisor metrics" width="750">
+*Gambar 7.10: Screenshot hasil query metrik container dari cAdvisor.*
+
+#### 7.4 Verifikasi Flask Prometheus Metrics
+
+```bash
+# Generate traffic
+for i in $(seq 1 30); do curl -s http://localhost:5000/ > /dev/null; done
+curl -s http://localhost:5000/api/health > /dev/null
+curl -s http://localhost:5000/api/logs/stats > /dev/null
+```
+
+<img src="images/7-11.png" alt="Figure 7.11 — Generate traffic" width="600">
+*Gambar 7.11: Screenshot hasil generate traffic ke Flask.*
+
+```bash
+# Cek metrics endpoint
+curl -s http://localhost:5000/metrics | grep "flask_http_requests_total"
+```
+
+<img src="images/7-12.png" alt="Figure 7.12 — Flask HTTP requests metric" width="700">
+*Gambar 7.12: Screenshot hasil `curl http://localhost:5000/metrics | grep flask_http_requests_total`.*
+
+```bash
+curl -s http://localhost:5000/metrics | grep "flask_http_request_duration_seconds"
+```
+
+<img src="images/7-13.png" alt="Figure 7.13 — Flask request latency metric" width="750">
+*Gambar 7.13: Screenshot hasil `curl http://localhost:5000/metrics | grep flask_http_request_duration_seconds`.*
+
+```bash
+curl -s http://localhost:5000/metrics | grep "flask_log_total_count"
+```
+
+<img src="images/7-14.png" alt="Figure 7.14 — Flask log count metric" width="600">
+*Gambar 7.14: Screenshot hasil `curl http://localhost:5000/metrics | grep flask_log_total_count`.*
 
 ---
 
-### Langkah 8: Setup dan Eksplorasi Grafana
+### Langkah 8: Eksplorasi Grafana Dashboard
 
 #### 8.1 Login ke Grafana
 
-Buka browser ke http://localhost:3000. Login dengan:
-- **Username:** admin
-- **Password:** admin
+1. Buka browser: http://localhost:3000
+2. Login: `admin` / `admin123`
+3. Skip change password (atau ganti sesuai keinginan)
 
-> Grafana akan meminta ganti password saat login pertama. Lewati atau ganti sesuai keinginan.
+<img src="images/8-1.png" alt="Figure 8.1 — Login Grafana" width="500">
+*Gambar 8.1: Screenshot halaman login Grafana.*
 
-![Figure 8.1 — Grafana Login Page](images/placeholder.png)
-*Gambar 8.1: Screenshot halaman login Grafana di http://localhost:3000 — field username dan password diisi admin/admin.*
+#### 8.2 Verifikasi Data Sources
 
-#### 8.2 Verifikasi Datasources
+1. Buka **Connections → Data sources** (menu kiri)
+2. Pastikan ada 2 data source: **Prometheus** dan **PostgreSQL-Logs**
 
-Navigasi ke **Connections → Data Sources** di sidebar Grafana. Pastikan datasource **Prometheus** dan **PostgreSQL** sudah muncul (hasil provisioning).
+<img src="images/8-2.png" alt="Figure 8.2 — Data sources Grafana" width="500">
+*Gambar 8.2: Screenshot halaman Data Sources Grafana — Prometheus dan PostgreSQL-Logs.*
 
-![Figure 8.2 — Grafana Datasources list](images/placeholder.png)
-*Gambar 8.2: Screenshot halaman Connections → Data Sources di Grafana — menampilkan datasource Prometheus dan PostgreSQL yang sudah terprovisioning.*
+3. Klik masing-masing → **Test** → harus "Data source is working"
 
-#### 8.3 Test Datasource Prometheus
+<img src="images/8-3.png" alt="Figure 8.3 — Test data source Prometheus" width="500">
+*Gambar 8.3: Screenshot hasil test koneksi data source Prometheus.*
 
-Klik datasource **Prometheus** → klik tombol **Save & test**. Harus muncul pesan "Data source is working".
+<img src="images/8-4.png" alt="Figure 8.4 — Test data source PostgreSQL" width="500">
+*Gambar 8.4: Screenshot hasil test koneksi data source PostgreSQL-Logs.*
 
-![Figure 8.3 — Test Prometheus datasource](images/placeholder.png)
-*Gambar 8.3: Screenshot hasil "Save & test" datasource Prometheus — menampilkan notifikasi hijau "Data source is working".*
+#### 8.3 Eksplorasi Dashboard yang Sudah di-Provision
 
-#### 8.4 Test Datasource PostgreSQL
+1. Buka **Dashboards** (menu kiri)
+2. Buka folder **Lab PENS** → terdapat 3 dashboard:
+   - **Docker Host Overview** — gauge CPU/Memory/Disk, grafik time-series
+   - **Container Metrics** — CPU/Memory/Network per container
+   - **Log Analytics (PostgreSQL)** — log volume, distribusi level, recent errors
 
-Klik datasource **PostgreSQL** → klik tombol **Save & test**. Harus muncul pesan "Database Connection OK".
+<img src="images/8-5.png" alt="Figure 8.5 — Daftar dashboard Grafana" width="600">
+*Gambar 8.5: Screenshot halaman Dashboards — folder Lab PENS berisi 3 dashboard.*
 
-![Figure 8.4 — Test PostgreSQL datasource](images/placeholder.png)
-*Gambar 8.4: Screenshot hasil "Save & test" datasource PostgreSQL — menampilkan notifikasi hijau "Database Connection OK".*
+#### 8.4 Buat Panel Custom Baru
 
-#### 8.5 Cek Dashboard List
-
-Navigasi ke **Dashboards** di sidebar → pilih folder **General**. Tiga dashboard dari provisioning akan muncul:
-- Docker Host Overview
-- Container Metrics
-- Log Analytics
-
-![Figure 8.5 — Grafana Dashboards list](images/placeholder.png)
-*Gambar 8.5: Screenshot halaman Dashboards di Grafana — menampilkan 3 dashboard yang terprovisioning (Docker Host Overview, Container Metrics, Log Analytics).*
-
-#### 8.6 Buat Custom Panel di Dashboard Baru
-
-1. Klik **+** icon di sidebar → **New Dashboard** → **Add visualization**
-2. Pilih datasource **Prometheus**
-3. Masukkan query:
+1. Buka dashboard **Container Metrics** → klik **Edit** (ikon pensil kanan atas)
+2. Klik **Add → Visualization**
+3. Pilih Data source: **Prometheus**
+4. Di panel **Query**, masukkan PromQL:
    ```
-   rate(flask_http_requests_total{endpoint="/api/process"}[5m])
+   flask_http_requests_total
    ```
-4. Pilih visualization type **Time series**
-5. Set title panel: **Flask API Process Request Rate**
-6. Klik **Apply** → **Save dashboard** dengan nama "Custom Flask Monitoring"
+5. Set Visualization type: **Bar chart**
+6. Beri judul: **Flask HTTP Requests by Endpoint**
+7. Klik **Apply**
 
-![Figure 8.6 — Custom Grafana panel Flask request rate](images/placeholder.png)
-*Gambar 8.6: Screenshot panel custom Grafana — menampilkan `rate(flask_http_requests_total{endpoint="/api/process"}[5m])` dengan visualization type Time series.*
+<img src="images/8-6.png" alt="Figure 8.6 — Panel custom Grafana" width="600">
+*Gambar 8.6: Screenshot pembuatan panel custom baru dengan query `flask_http_requests_total`.*
 
-#### 8.7 Buat Alert Rule di Grafana
+#### 8.5 Buat Alert Rule di Grafana
 
-1. Navigasi ke **Alerting → Alert rules** → klik **New alert rule**
-2. **Rule name:** High Flask Error Rate
-3. **Metric query** (Prometheus):
+1. Buka **Alerting → Alert rules** (menu kiri)
+2. Klik **New alert rule**
+3. Rule name: `High CPU Alert`
+4. Query A (Prometheus):
    ```
-   rate(flask_http_errors_total[5m])
+   100 - (avg(rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100)
    ```
-4. **Condition:** `IS ABOVE 0.1` (threshold error rate > 0.1 per detik)
-5. **Evaluation interval:** 1m
-6. **Folder:** General
-7. **Evaluation group:** flask-alerts
+5. Condition: **IS ABOVE** 80
+6. Evaluation: **Every** 1m, **For** 2m
+7. Labels: `severity = warning`
 8. Klik **Save rule and exit**
 
-![Figure 8.7 — Grafana alert rule](images/placeholder.png)
-*Gambar 8.7: Screenshot pembuatan alert rule "High Flask Error Rate" di Grafana — menggunakan Prometheus query `rate(flask_http_errors_total[5m])` dengan threshold > 0.1.*
+<img src="images/8-7.png" alt="Figure 8.7 — Alert rule Grafana" width="750">
+*Gambar 8.7: Screenshot pembuatan alert rule High CPU Alert di Grafana.*
 
 ---
 
-### Langkah 9: Stress Test dan Observasi Monitoring
+### Langkah 9: Stress Test dan Observasi
 
-#### 9.1 Install stress tool di host
-
-```bash
-# Install stress tool untuk CPU/memory stress test
-sudo apt update && sudo apt install -y stress
-```
-
-![Figure 9.1 — Install stress tool](images/placeholder.png)
-*Gambar 9.1: Screenshot hasil `sudo apt install -y stress` — stress tool berhasil diinstal di host.*
-
-#### 9.2 Jalankan stress test CPU
+#### 9.1 Generate load
 
 ```bash
-# Stress 2 core CPU selama 120 detik
-stress --cpu 2 --timeout 120 &
+# CPU stress (install stress tool di host)
+sudo apt install -y stress
 ```
 
-![Figure 9.2 — Stress test CPU](images/placeholder.png)
-*Gambar 9.2: Screenshot hasil `stress --cpu 2 --timeout 120` — stress test berjalan pada 2 core CPU selama 120 detik.*
-
-#### 9.3 Generate traffic simultan ke Flask app
+<img src="images/9-1.png" alt="Figure 9.1 — Install stress tool" width="700">
+*Gambar 9.1: Screenshot hasil `sudo apt install -y stress`.*
 
 ```bash
-# Simulasi load ke Flask app endpoint processing
-curl -s "http://localhost:5050/api/simulate-load?duration=3&intensity=5000000" &
-curl -s "http://localhost:5050/api/simulate-load?duration=3&intensity=5000000" &
-
-# Loop request ke /api/process selama stress berjalan
-for i in $(seq 1 50); do
-  curl -s http://localhost:5050/api/process &
-done
-wait
-echo "Load simulation complete!"
+# Stress test CPU selama 60 detik (2 core)
+stress --cpu 2 --timeout 60 &
 ```
 
-![Figure 9.3 — Generate traffic ke Flask app selama stress test](images/placeholder.png)
-*Gambar 9.3: Screenshot hasil generate traffic (simulate-load + 50 process request) ke Flask app selama stress test berjalan.*
+<img src="images/9-2.png" alt="Figure 9.2 — CPU stress test" width="700">
+*Gambar 9.2: Screenshot hasil menjalankan `stress --cpu 2 --timeout 60`.*
 
-#### 9.4 Observasi CPU Usage di Grafana Dashboard
+```bash
+# Bersamaan, generate HTTP traffic ke Flask
+for i in $(seq 1 200); do curl -s http://localhost:5000/ > /dev/null; done &
 
-Buka dashboard **Docker Host Overview** di Grafana. Perhatikan grafik CPU Usage — akan terlihat lonjakan CPU usage selama stress test berlangsung (~90-100%).
+# Generate traffic ke Nginx
+for i in $(seq 1 200); do curl -s http://localhost:8080 > /dev/null; done &
+```
 
-![Figure 9.4 — Grafana Dashboard Host Overview saat stress test](images/placeholder.png)
-*Gambar 9.4: Screenshot dashboard Docker Host Overview di Grafana — grafik CPU Usage menunjukkan lonjakan ~90-100% selama 120 detik stress test, kemudian turun kembali ke ~10% setelah selesai.*
+<img src="images/9-3.png" alt="Figure 9.3 — Generate traffic saat stress" width="600">
+*Gambar 9.3: Screenshot hasil generate HTTP traffic ke Flask dan Nginx bersamaan dengan stress test.*
 
-#### 9.5 Observasi Container Metrics
+#### 9.2 Observasi di Grafana
 
-Buka dashboard **Container Metrics** di Grafana. Amati perubahan CPU dan memory setiap container selama stress test.
+1. Buka dashboard **Docker Host Overview** → amati lonjakan CPU gauge dan grafik
 
-![Figure 9.5 — Grafana Dashboard Container Metrics saat stress test](images/placeholder.png)
-*Gambar 9.5: Screenshot dashboard Container Metrics di Grafana — menampilkan CPU dan memory usage per container (flask-app, flask-app terlihat meningkat saat traffic test).*
+<img src="images/9-4.png" alt="Figure 9.4 — Dashboard Docker Host Overview saat load tinggi" width="700">
+*Gambar 9.4: Screenshot dashboard Docker Host Overview menunjukkan lonjakan CPU gauge dan grafik time-series.*
 
-#### 9.6 Observasi Log Analytics
+2. Buka dashboard **Container Metrics** → amati container mana yang pakai resource terbanyak
 
-Buka dashboard **Log Analytics** di Grafana. Perhatikan log dari generator Fluent Bit — akan terlihat log ERROR dan WARN yang muncul bersama INFO.
+<img src="images/9-5.png" alt="Figure 9.5 — Dashboard Container Metrics saat load tinggi" width="500">
+*Gambar 9.5: Screenshot dashboard Container Metrics menampilkan container dengan CPU dan memory tertinggi.*
 
-![Figure 9.6 — Grafana Dashboard Log Analytics](images/placeholder.png)
-*Gambar 9.6: Screenshot dashboard Log Analytics di Grafana — menampilkan log volume by level, donut chart distribusi level log, dan tabel recent log entries dari PostgreSQL.*
+3. Buka dashboard **Log Analytics** → amati lonjakan log volume
 
-#### 9.7 Cek Alerting di Grafana
+<img src="images/9-6.png" alt="Figure 9.6 — Dashboard Log Analytics saat load tinggi" width="500">
+*Gambar 9.6: Screenshot dashboard Log Analytics menunjukkan lonjakan log volume dan distribusi level.*
 
-Navigasi ke **Alerting → Alert rules**. Perhatikan status alert "High Flask Error Rate" — jika error rate di atas threshold, alert akan berstatus **Firing**.
+4. Buka **Alerting → Alert rules** → cek apakah alert CPU terpicu
 
-![Figure 9.7 — Grafana Alerting status](images/placeholder.png)
-*Gambar 9.7: Screenshot halaman Alerting → Alert rules di Grafana — menampilkan status alert rule (Normal/Firing) dan event history.*
+<img src="images/9-7.png" alt="Figure 9.7 — Alert CPU terpicu" width="600">
+*Gambar 9.7: Screenshot halaman Alerting menunjukkan alert High CPU Usage dalam status firing.*
+
+#### 9.3 Screenshot semua dashboard saat load tinggi
+
+Ambil screenshot dashboard saat **stress** masih berjalan — ini menunjukkan kemampuan monitoring mendeteksi anomali secara real-time.
 
 ---
 
@@ -2465,149 +1371,25 @@ Navigasi ke **Alerting → Alert rules**. Perhatikan status alert "High Flask Er
 
 ### 1. Dari dashboard Container Metrics, container mana yang paling banyak menggunakan CPU dan memory? Mengapa?
 
-- Container dengan CPU usage tertinggi adalah container yang sedang aktif memproses workload atau request. Pada saat praktikum, **flask-app** menunjukkan lonjakan CPU usage karena menerima traffic API (simulate-load dan /api/process), sedangkan **cadvisor** secara konsisten menggunakan CPU untuk mengumpulkan metric dari Docker daemon.
-- Container dengan memory usage tertinggi biasanya karena caching, runtime aplikasi, buffer internal, atau workload yang menetap di RAM. **Prometheus** umumnya menggunakan memory yang cukup besar karena menyimpan time-series data di TSDB, begitu pula **PostgreSQL** yang menggunakan memory untuk shared buffers dan query cache.
-
-![Figure PostLab 1 — Container dengan CPU dan memory tertinggi](images/placeholder.png)
-*Gambar PostLab 1: Screenshot dashboard Container Metrics di Grafana yang menunjukkan container dengan CPU usage tertinggi (flask-app saat traffic) dan memory usage tertinggi (prometheus atau postgres).*
+Berdasarkan dashboard Container Metrics, container dengan CPU usage tertinggi adalah container yang sedang aktif memproses workload atau request. Container dengan memory usage tertinggi biasanya karena caching, runtime aplikasi, buffer internal, atau workload yang menetap di RAM.
 
 ### 2. Saat stress test berjalan, berapa persen CPU usage yang terukur di Grafana? Bandingkan dengan output top atau htop di host.
 
-Pada dashboard Host Monitoring, CPU usage mencapai sekitar **90%** saat stress test dimulai, lalu turun kembali ke sekitar **10-11%** setelah stress selesai. Output `top` atau `htop` di host biasanya juga menunjukkan nilai yang mendekati **85-95%**. Perbedaan kecil normal karena:
-
-- Interval sampling berbeda antara Prometheus (15 detik) dan top (real-time, ~1-3 detik)
-- Smoothing pada Grafana/Prometheus akibat fungsi `rate()` menggunakan moving window
-- Overhead dari Docker container dan monitoring tools sendiri turut berkontribusi terhadap penggunaan CPU host
-
-```bash
-# Cek CPU usage dengan top (bandingkan dengan Grafana)
-top -bn1 | head -5
-```
-
-![Figure PostLab 2 — Perbandingan CPU Grafana vs top](images/placeholder.png)
-*Gambar PostLab 2: Screenshot perbandingan — kiri: dashboard Grafana menampilkan CPU usage ~90%, kanan: output `top` di host menampilkan CPU usage ~87%.*
+Pada dashboard Host Monitoring, CPU usage mencapai sekitar 90% saat stress test dimulai, lalu turun kembali ke sekitar 10–11% setelah stress selesai. Output `top` atau `htop` di host biasanya juga menunjukkan nilai yang mendekati 85–95%. Perbedaan kecil normal karena interval sampling berbeda, smoothing pada Grafana/Prometheus, dan `rate()` menggunakan moving window.
 
 ### 3. Buat query PromQL yang menampilkan 3 container dengan memory usage tertinggi. Tunjukkan query dan hasilnya.
-
-Query PromQL:
 
 ```
 topk(3, container_memory_usage_bytes{id=~"/docker/[a-f0-9]+"})
 ```
 
-Query ini menggunakan fungsi `topk(3, ...)` untuk mengambil 3 container dengan nilai `container_memory_usage_bytes` tertinggi. Filter `id=~"/docker/[a-f0-9]+"` memastikan hanya container Docker yang dihitung (mengecualikan metric system).
-
-Buka Prometheus UI → tab **Graph** → masukkan query di atas → klik **Execute**. Hasilnya akan menampilkan 3 time series dengan nama container dan memory usage dalam bytes.
-
-Atau query untuk melihat nilai instant terbaru saja:
-
-```
-topk(3, container_memory_usage_bytes{id=~"/docker/[a-f0-9]+"} > 0)
-```
-
-![Figure PostLab 3 — Query topk memory container](images/placeholder.png)
-*Gambar PostLab 3: Screenshot hasil query `topk(3, container_memory_usage_bytes{...})` di Prometheus UI — menampilkan 3 container dengan memory usage tertinggi beserta nilainya dalam bytes.*
-
 ### 4. Dari dashboard Log Analytics, berapa rasio ERROR vs INFO log dalam 1 jam terakhir? Apakah ini normal untuk aplikasi production?
 
-Kondisi menunjukkan pipeline Fluent Bit -> PostgreSQL berjalan dan menghasilkan data log. Rasio yang terlihat di dashboard (melalui donut chart **Log Level Distribution**) bergantung pada generator log yang digunakan — log digenerate secara acak dengan distribusi yang telah ditentukan dalam script `generate_logs.py`.
-
-Pada production, seharusnya selalu ada INFO log — minimal request log, startup log, atau health check log. Rasio ERROR terhadap INFO yang ideal di production adalah sangat kecil (misalnya < 1%). Jika ERROR melebihi 5-10% dari total log, perlu investigasi lebih lanjut. WARN biasanya menunjukkan potensi masalah yang belum kritis — acceptable di kisaran 5-10%.
-
-![Figure PostLab 4 — Rasio log level di dashboard](images/placeholder.png)
-*Gambar PostLab 4: Screenshot donut chart Log Level Distribution di dashboard Log Analytics Grafana — menampilkan rasio ERROR vs WARN vs INFO dalam periode 1 jam terakhir.*
+Kondisi menunjukkan pipeline Fluent Bit ke PostgreSQL belum berjalan sempurna jika log belum masuk. Pada production seharusnya selalu ada INFO log — minimal request log, startup log, atau health check log.
 
 ### 5. Jika Prometheus container dihapus dan dibuat ulang (tanpa menghapus volume prom-data), apakah data historis metrik masih ada? Buktikan.
 
 Ya, data historis tetap ada selama volume `prom-data` tidak dihapus. Karena metrics TSDB Prometheus disimpan pada Docker volume yang bersifat persistent dan terpisah dari lifecycle container. Data akan hilang hanya jika volume ikut dihapus (`docker compose down -v`).
-
-**Pembuktian:**
-
-```bash
-# 1. Catat jumlah data sebelum dihapus (lihat storage info)
-curl -s http://localhost:9090/api/v1/status/tsdb | python3 -m json.tool | grep numSeries
-
-# 2. Stop dan hapus container Prometheus
-docker compose stop prometheus
-docker compose rm -f prometheus
-
-# 3. Buat ulang container Prometheus (tanpa hapus volume)
-docker compose up -d prometheus
-
-# 4. Tunggu beberapa detik, lalu cek kembali data
-sleep 10
-curl -s http://localhost:9090/api/v1/status/tsdb | python3 -m json.tool | grep numSeries
-
-# 5. Query data historis (sebelum container dihapus)
-# Buka Prometheus UI → query: container_memory_usage_bytes
-# → atur time range ke waktu sebelum container dihapus → data tetap ada!
-```
-
-![Figure PostLab 5 — Data historis tetap ada setelah recreate container](images/placeholder.png)
-*Gambar PostLab 5: Screenshot perbandingan — kiri: Prometheus UI sebelum container dihapus (query menampilkan data), kanan: Prometheus UI setelah container dibuat ulang (data historis masih muncul, membuktikan TSDB di volume persisten).*
-
----
-
-## DAFTAR GAMBAR
-
-| Figure | Deskripsi |
-|--------|-----------|
-| 0.1 | Membuat direktori project monitoring |
-| 1.1 | Membuat file prometheus.yml |
-| 1.2 | Membuat file alert_rules.yml |
-| 2.1 | Membuat file datasources.yml |
-| 2.2 | Membuat file dashboards.yml |
-| 2.3 | Membuat dashboard docker-host-overview.json (bagian 1) |
-| 2.4 | Membuat dashboard docker-host-overview.json (bagian 2) |
-| 2.5 | Membuat dashboard docker-host-overview.json (bagian 3) |
-| 2.6 | Membuat dashboard container-metrics.json |
-| 2.7 | Membuat dashboard log-analytics.json |
-| 3.1 | Membuat file requirements.txt |
-| 3.2 | Membuat file app.py (bagian 1) |
-| 3.3 | Membuat file app.py (bagian 2) |
-| 3.4 | Membuat Dockerfile untuk Flask app |
-| 4.1 | Membuat file fluent-bit.conf |
-| 4.2 | Membuat file generator generate_logs.py |
-| 4.3 | Membuat file init.sql |
-| 5.1 | Membuat docker-compose.yml (services 1-4) |
-| 5.2 | Membuat docker-compose.yml (services 5-7) |
-| 5.3 | Membuat docker-compose.yml (services 8-9 + volumes/networks) |
-| 6.1 | Docker compose up -d |
-| 6.2 | Docker compose ps |
-| 7.1 | Prometheus Web UI |
-| 7.2 | Curl Prometheus targets API (bagian 1) |
-| 7.3 | Curl Prometheus targets API (bagian 2 — filtered) |
-| 7.4 | Query PromQL CPU Usage |
-| 7.5 | Query PromQL Memory Usage |
-| 7.6 | Query PromQL Container Count |
-| 7.7 | Prometheus Targets Status Page |
-| 7.8 | Curl node-exporter metrics |
-| 7.9 | Specific metric node_memory_MemAvailable |
-| 7.10 | cAdvisor Web UI |
-| 7.11 | cAdvisor metrics endpoint |
-| 7.12 | Generate traffic ke Flask app |
-| 7.13 | Flask metrics: HTTP requests total |
-| 7.14 | Flask metrics: Request latency p95 |
-| 7.15 | Flask metrics: Active users |
-| 8.1 | Grafana Login Page |
-| 8.2 | Grafana Datasources list |
-| 8.3 | Test Prometheus datasource |
-| 8.4 | Test PostgreSQL datasource |
-| 8.5 | Grafana Dashboards list |
-| 8.6 | Custom Grafana panel Flask request rate |
-| 8.7 | Grafana alert rule |
-| 9.1 | Install stress tool |
-| 9.2 | Stress test CPU |
-| 9.3 | Generate traffic ke Flask app selama stress test |
-| 9.4 | Grafana Dashboard Host Overview saat stress test |
-| 9.5 | Grafana Dashboard Container Metrics saat stress test |
-| 9.6 | Grafana Dashboard Log Analytics |
-| 9.7 | Grafana Alerting status |
-| PostLab 1 | Container dengan CPU dan memory tertinggi |
-| PostLab 2 | Perbandingan CPU Grafana vs top |
-| PostLab 3 | Query topk memory container |
-| PostLab 4 | Rasio log level di dashboard |
-| PostLab 5 | Data historis tetap ada setelah recreate container |
 
 ---
 

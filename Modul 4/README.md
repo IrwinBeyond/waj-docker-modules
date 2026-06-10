@@ -41,599 +41,475 @@ Karena filesystem container bersifat ephemeral sehingga data akan hilang ketika 
 ### Langkah 0: Persiapan Project
 
 ```bash
-# Buat direktori project
 mkdir -p ~/docker-lab/postgresql/{init,config,backup}
-
-# Masuk ke direktori project
 cd ~/docker-lab/postgresql
 ```
 
-![Figure 0.1 — Membuat direktori project PostgreSQL](images/placeholder.png)
+<img src="images/0-1.png" alt="Figure 0.1 — Persiapan direktori project" width="600">
 *Gambar 0.1: Screenshot hasil `mkdir -p ~/docker-lab/postgresql/{init,config,backup}` dan `cd ~/docker-lab/postgresql`.*
 
 ---
 
 ### Langkah 1: Deploy PostgreSQL dengan Docker Compose
 
-#### 1.1 Buat init script untuk inisialisasi database
+#### 1.1 Buat init script (dijalankan saat pertama kali)
 
 ```bash
 cat > init/01-create-schema.sql << 'EOF'
--- ============================================================
--- PostgreSQL Init Script: Database Akademik
--- Module 4 — Workshop Administrasi Jaringan
--- ============================================================
+-- ==============================================
+-- Init Script: Database Schema untuk Lab PENS
+-- Dijalankan otomatis saat container pertama kali start
+-- ==============================================
 
--- 1. Buat user aplikasi (non-superuser)
-CREATE USER labuser WITH PASSWORD 'labpass123';
-ALTER USER labuser CREATEDB;
+-- Buat database tambahan
+CREATE DATABASE inventory_db;
 
--- 2. Buat user read-only untuk monitoring / reporting
-CREATE USER app_reader WITH PASSWORD 'readerpass123';
+-- Gunakan database utama (labdb sudah dibuat via env)
+\c labdb
 
--- 3. Buat database akademik
-CREATE DATABASE akademik OWNER labuser;
+-- Buat schema
+CREATE SCHEMA IF NOT EXISTS app;
 
--- 4. Connect ke database akademik
-\c akademik
-
--- 5. Buat schema aplikasi
-CREATE SCHEMA IF NOT EXISTS app AUTHORIZATION labuser;
-
--- 6. Set search_path default untuk labuser
-ALTER USER labuser SET search_path TO app, public;
-
--- 7. Buat tabel mahasiswa
+-- Tabel: Mahasiswa
 CREATE TABLE app.mahasiswa (
-    id          SERIAL PRIMARY KEY,
-    nim         VARCHAR(15)  NOT NULL UNIQUE,
-    nama        VARCHAR(100) NOT NULL,
-    jurusan     VARCHAR(50)  NOT NULL,
-    angkatan    INT          NOT NULL,
-    email       VARCHAR(100),
-    created_at  TIMESTAMP    DEFAULT CURRENT_TIMESTAMP
+    id SERIAL PRIMARY KEY,
+    nrp VARCHAR(15) UNIQUE NOT NULL,
+    nama VARCHAR(100) NOT NULL,
+    kelas CHAR(1) CHECK (kelas IN ('A', 'B', 'C', 'D')),
+    kelompok INTEGER CHECK (kelompok BETWEEN 1 AND 10),
+    email VARCHAR(100),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
--- 8. Buat tabel mata_kuliah
-CREATE TABLE app.mata_kuliah (
-    id       SERIAL PRIMARY KEY,
-    kode     VARCHAR(10)  NOT NULL UNIQUE,
-    nama     VARCHAR(100) NOT NULL,
-    sks      INT          NOT NULL CHECK (sks > 0),
-    semester INT          NOT NULL
+-- Tabel: Mata Kuliah
+CREATE TABLE app.matakuliah (
+    id SERIAL PRIMARY KEY,
+    kode VARCHAR(10) UNIQUE NOT NULL,
+    nama VARCHAR(100) NOT NULL,
+    sks INTEGER CHECK (sks BETWEEN 1 AND 6)
 );
 
--- 9. Buat tabel nilai (relasi many-to-many)
+-- Tabel: Nilai (relasi many-to-many)
 CREATE TABLE app.nilai (
-    id              SERIAL PRIMARY KEY,
-    mahasiswa_id    INT NOT NULL REFERENCES app.mahasiswa(id) ON DELETE CASCADE,
-    mata_kuliah_id  INT NOT NULL REFERENCES app.mata_kuliah(id) ON DELETE CASCADE,
-    nilai           CHAR(2),
-    grade           VARCHAR(2),
-    semester_ambil  INT,
-    UNIQUE (mahasiswa_id, mata_kuliah_id, semester_ambil)
+    id SERIAL PRIMARY KEY,
+    mahasiswa_id INTEGER REFERENCES app.mahasiswa(id) ON DELETE CASCADE,
+    matakuliah_id INTEGER REFERENCES app.matakuliah(id) ON DELETE CASCADE,
+    nilai_angka NUMERIC(5,2) CHECK (nilai_angka BETWEEN 0 AND 100),
+    grade CHAR(2),
+    semester VARCHAR(10),
+    UNIQUE(mahasiswa_id, matakuliah_id, semester)
 );
 
--- 10. Insert sample data mahasiswa
-INSERT INTO app.mahasiswa (nim, nama, jurusan, angkatan, email) VALUES
-    ('3124600035', 'Irwin Ahmad Wiryawan', 'Teknik Informatika', 2024, 'irwin@pens.ac.id'),
-    ('3124600036', 'Budi Santoso',       'Teknik Informatika', 2024, 'budi@pens.ac.id'),
-    ('3124600037', 'Siti Nurhaliza',     'Sistem Informasi',   2024, 'siti@pens.ac.id'),
-    ('3124600038', 'Ahmad Fauzi',        'Teknik Informatika', 2023, 'fauzi@pens.ac.id'),
-    ('3124600039', 'Dewi Lestari',       'Sistem Informasi',   2023, 'dewi@pens.ac.id'),
-    ('3124600040', 'Rudi Hartono',       'Teknik Komputer',    2024, 'rudi@pens.ac.id');
+-- Tabel: Log Aktivitas (untuk Modul 5 logging)
+CREATE TABLE app.activity_log (
+    id BIGSERIAL PRIMARY KEY,
+    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    level VARCHAR(10) DEFAULT 'INFO',
+    source VARCHAR(50),
+    message TEXT,
+    metadata JSONB
+);
 
--- 11. Insert sample data mata_kuliah
-INSERT INTO app.mata_kuliah (kode, nama, sks, semester) VALUES
-    ('WAJ101', 'Workshop Administrasi Jaringan', 3, 4),
-    ('BDD201', 'Basis Data Lanjut',              4, 4),
-    ('PBO301', 'Pemrograman Berorientasi Objek', 3, 4),
-    ('JAR401', 'Jaringan Komputer',              3, 3),
-    ('SIS501', 'Sistem Operasi',                 2, 3);
+-- Index untuk performa query
+CREATE INDEX idx_mahasiswa_kelas ON app.mahasiswa(kelas);
+CREATE INDEX idx_mahasiswa_nrp ON app.mahasiswa(nrp);
+CREATE INDEX idx_nilai_semester ON app.nilai(semester);
+CREATE INDEX idx_activity_log_timestamp ON app.activity_log(timestamp);
+CREATE INDEX idx_activity_log_level ON app.activity_log(level);
+CREATE INDEX idx_activity_log_metadata ON app.activity_log USING GIN(metadata);
 
--- 12. Insert sample data nilai
-INSERT INTO app.nilai (mahasiswa_id, mata_kuliah_id, nilai, grade, semester_ambil) VALUES
-    (1, 1, '85', 'A',  4),
-    (1, 2, '78', 'B+', 4),
-    (1, 3, '92', 'A',  4),
-    (2, 1, '70', 'B',  4),
-    (2, 2, '65', 'B-', 4),
-    (3, 1, '88', 'A',  4),
-    (3, 4, '75', 'B+', 3),
-    (4, 4, '60', 'C+', 3),
-    (4, 5, '80', 'A-', 3);
+-- Insert sample data
+INSERT INTO app.matakuliah (kode, nama, sks) VALUES
+    ('JAR01', 'Administrasi Jaringan', 3),
+    ('SBD01', 'Sistem Basis Data', 3),
+    ('SO01', 'Sistem Operasi', 2),
+    ('WEB01', 'Pemrograman Web', 3);
 
--- 13. Grant privileges
--- labuser sudah jadi owner schema app, jadi punya full access
-GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA app TO labuser;
-GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA app TO labuser;
+INSERT INTO app.mahasiswa (nrp, nama, kelas, kelompok, email) VALUES
+    ('3122600001', 'Ahmad Fauzi', 'A', 1, 'ahmad@student.pens.ac.id'),
+    ('3122600002', 'Budi Santoso', 'A', 1, 'budi@student.pens.ac.id'),
+    ('3122600003', 'Citra Dewi', 'B', 2, 'citra@student.pens.ac.id'),
+    ('3122600004', 'Dian Pratama', 'B', 2, 'dian@student.pens.ac.id'),
+    ('3122600005', 'Eka Putra', 'C', 3, 'eka@student.pens.ac.id');
 
--- app_reader: read-only access
+INSERT INTO app.nilai (mahasiswa_id, matakuliah_id, nilai_angka, grade, semester) VALUES
+    (1, 1, 85.50, 'A', '2025-1'),
+    (1, 2, 78.00, 'B+', '2025-1'),
+    (2, 1, 92.00, 'A', '2025-1'),
+    (3, 1, 70.25, 'B', '2025-1'),
+    (4, 3, 88.75, 'A', '2025-1');
+
+-- Buat read-only user untuk aplikasi
+CREATE USER app_reader WITH PASSWORD 'reader123';
 GRANT USAGE ON SCHEMA app TO app_reader;
 GRANT SELECT ON ALL TABLES IN SCHEMA app TO app_reader;
-ALTER DEFAULT PRIVILEGES FOR ROLE labuser IN SCHEMA app
-    GRANT SELECT ON TABLES TO app_reader;
+ALTER DEFAULT PRIVILEGES IN SCHEMA app GRANT SELECT ON TABLES TO app_reader;
 
--- 14. Verifikasi data
-SELECT 'Schema dan sample data berhasil dibuat!' AS status;
-SELECT COUNT(*) AS jumlah_mahasiswa FROM app.mahasiswa;
-SELECT COUNT(*) AS jumlah_mata_kuliah FROM app.mata_kuliah;
-SELECT COUNT(*) AS jumlah_nilai FROM app.nilai;
+RAISE NOTICE 'Database initialization completed successfully!';
 EOF
 ```
 
-![Figure 1.1 — Membuat init script 01-create-schema.sql](images/placeholder.png)
+<img src="images/1-1.png" alt="Figure 1.1 — Membuat init script" width="750">
 *Gambar 1.1: Screenshot hasil pembuatan file `init/01-create-schema.sql` dengan heredoc.*
 
-#### 1.2 Buat custom PostgreSQL configuration
+#### 1.2 Buat custom PostgreSQL config
 
 ```bash
 cat > config/custom-postgresql.conf << 'EOF'
-# ============================================================
-# Custom PostgreSQL Configuration
-# Dioptimasi untuk container dengan resource terbatas (~512MB RAM)
-# ============================================================
+# ==============================================
+# Custom PostgreSQL Configuration untuk Lab
+# ==============================================
 
-# --- Memory ---
-shared_buffers = 128MB          # 25% dari RAM container (~512MB)
-work_mem = 4MB                  # Per-operation sort memory
-maintenance_work_mem = 32MB     # Untuk VACUUM, CREATE INDEX, dll
-effective_cache_size = 384MB    # Estimasi cache OS untuk query planner
+# Connection
+listen_addresses = '*'
+max_connections = 50
 
-# --- Connection ---
-max_connections = 50            # Disesuaikan untuk container
-superuser_reserved_connections = 3
+# Memory (sesuaikan untuk container dengan RAM terbatas)
+shared_buffers = 128MB
+work_mem = 4MB
+maintenance_work_mem = 64MB
+effective_cache_size = 256MB
 
-# --- WAL (Write-Ahead Log) ---
-wal_buffers = 4MB
-min_wal_size = 80MB
+# WAL & Checkpoint
+wal_level = replica
 max_wal_size = 256MB
-checkpoint_completion_target = 0.9
+min_wal_size = 64MB
 
-# --- Query Planner ---
-random_page_cost = 1.1          # SSD-optimized
-effective_io_concurrency = 200
-
-# --- Logging ---
-log_destination = 'stderr'
+# Logging
 logging_collector = on
 log_directory = '/var/log/postgresql'
 log_filename = 'postgresql-%Y-%m-%d.log'
-log_statement = 'ddl'           # Log semua DDL
-log_min_duration_statement = 1000  # Log query > 1 detik
+log_statement = 'mod'
+log_min_duration_statement = 1000
 log_connections = on
 log_disconnections = on
-log_line_prefix = '%t [%p-%l] %q%u@%d '
+log_line_prefix = '%t [%p] %u@%d '
 
-# --- Autovacuum ---
-autovacuum = on
-autovacuum_max_workers = 3
-autovacuum_naptime = 1min
-
-# --- Statistik ---
-track_activities = on
-track_counts = on
-track_functions = pl
+# Locale & Timezone
+timezone = 'Asia/Jakarta'
+log_timezone = 'Asia/Jakarta'
 EOF
 ```
 
-![Figure 1.2 — Membuat custom PostgreSQL config](images/placeholder.png)
+<img src="images/1-2.png" alt="Figure 1.2 — Membuat custom config" width="750">
 *Gambar 1.2: Screenshot hasil pembuatan file `config/custom-postgresql.conf`.*
 
-#### 1.3 Buat docker-compose.yml
+#### 1.3 Buat Docker Compose
 
 ```bash
 cat > docker-compose.yml << 'EOF'
-# ============================================================
-# Docker Compose: PostgreSQL + pgAdmin
-# Module 4 — Workshop Administrasi Jaringan
-# ============================================================
-
-version: "3.9"
-
 services:
-  # ---- PostgreSQL Database Server ----
+
+  # --- PostgreSQL 16 ---
   db:
     image: postgres:16-alpine
     container_name: postgres-db
-    restart: unless-stopped
-
     environment:
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-adminpass456}
-      PGDATA: /var/lib/postgresql/data/pgdata
-
+      POSTGRES_DB: labdb
+      POSTGRES_USER: labuser
+      POSTGRES_PASSWORD: labpass123
+      TZ: Asia/Jakarta
     ports:
       - "5432:5432"
-
     volumes:
-      # Persistent data volume
       - pg-data:/var/lib/postgresql/data
-      # Init scripts (dieksekusi hanya saat volume kosong / pertama kali)
-      - ./init:/docker-entrypoint-initdb.d
-      # Custom config
-      - ./config/custom-postgresql.conf:/etc/postgresql/postgresql.conf
-
-    # Terapkan custom config
-    command:
-      - "postgres"
-      - "-c"
-      - "config_file=/etc/postgresql/postgresql.conf"
-
+      - ./init:/docker-entrypoint-initdb.d:ro
+      - ./config/custom-postgresql.conf:/etc/postgresql/custom.conf:ro
+      - ./backup:/backup
+      - pg-logs:/var/log/postgresql
+    command: >
+      postgres
+      -c config_file=/etc/postgresql/custom.conf
+      -c hba_file=/var/lib/postgresql/data/pg_hba.conf
+    networks:
+      - db-net
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      test: ["CMD-SHELL", "pg_isready -U labuser -d labdb"]
       interval: 10s
       timeout: 5s
       retries: 5
-      start_period: 30s
-
-    networks:
-      - postgres-net
-
-  # ---- pgAdmin Web Interface ----
-  pgadmin:
-    image: dpage/pgadmin4:latest
-    container_name: pgadmin-web
     restart: unless-stopped
 
+  # --- pgAdmin 4 (GUI) ---
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: pgadmin4
     environment:
-      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_EMAIL:-admin@pens.ac.id}
-      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_PASSWORD:-pgadmin123}
-      PGADMIN_CONFIG_SERVER_MODE: "False"
-      PGADMIN_CONFIG_MASTER_PASSWORD_REQUIRED: "False"
-
+      PGADMIN_DEFAULT_EMAIL: admin@pens.ac.id
+      PGADMIN_DEFAULT_PASSWORD: admin123
+      PGADMIN_LISTEN_PORT: 5050
     ports:
-      - "8080:80"
-
+      - "5050:5050"
     volumes:
       - pgadmin-data:/var/lib/pgadmin
-
+    networks:
+      - db-net
     depends_on:
       db:
         condition: service_healthy
-
-    networks:
-      - postgres-net
+    restart: unless-stopped
 
 volumes:
   pg-data:
-    name: postgres-pg-data
+  pg-logs:
   pgadmin-data:
-    name: postgres-pgadmin-data
 
 networks:
-  postgres-net:
-    name: postgres-network
-    driver: bridge
+  db-net:
 EOF
 ```
 
-![Figure 1.3 — Membuat docker-compose.yml](images/placeholder.png)
+<img src="images/1-3.png" alt="Figure 1.3 — Membuat docker-compose.yml" width="750">
 *Gambar 1.3: Screenshot hasil pembuatan file `docker-compose.yml`.*
 
-#### 1.4 Deploy services
+#### 1.4 Deploy
 
 ```bash
-# Jalankan semua service di background
 docker compose up -d
 ```
 
-![Figure 1.4 — docker compose up -d](images/placeholder.png)
-*Gambar 1.4: Screenshot hasil `docker compose up -d` — container PostgreSQL dan pgAdmin berhasil dijalankan.*
+<img src="images/1-4.png" alt="Figure 1.4 — docker compose up -d" width="600">
+*Gambar 1.4: Screenshot hasil `docker compose up -d` — container berjalan.*
 
 ```bash
-# Cek status container
 docker compose ps
 ```
 
-![Figure 1.5 — docker compose ps](images/placeholder.png)
-*Gambar 1.5: Screenshot hasil `docker compose ps` menampilkan container postgres-db dan pgadmin-web dengan status Up.*
+<img src="images/1-5.png" alt="Figure 1.5 — docker compose ps" width="700">
+*Gambar 1.5: Screenshot hasil `docker compose ps` menampilkan status container.*
 
 ```bash
-# Lihat log database (pastikan init script berhasil)
-docker compose logs db
+# Tunggu hingga healthcheck pass
+docker compose logs db | tail -20
 ```
 
-![Figure 1.6 — docker compose logs db](images/placeholder.png)
-*Gambar 1.6: Screenshot hasil `docker compose logs db` menampilkan log startup PostgreSQL dan eksekusi init script.*
+<img src="images/1-6.png" alt="Figure 1.6 — docker compose logs db" width="750">
+*Gambar 1.6: Screenshot hasil `docker compose logs db | tail -20` — log startup PostgreSQL dan init script.*
 
 ---
 
 ### Langkah 2: Koneksi dan Verifikasi Database
 
-#### 2.1 Koneksi dengan `psql` client (host)
+#### 2.1 Koneksi via psql dari host
 
 ```bash
-# Install PostgreSQL client (jika belum ada)
-sudo apt update && sudo apt install -y postgresql-client
+# Install psql client (jika belum)
+sudo apt install -y postgresql-client
 ```
 
-![Figure 2.1 — Instalasi postgresql-client](images/placeholder.png)
-*Gambar 2.1: Screenshot hasil `sudo apt install -y postgresql-client` menunjukkan package berhasil diinstal.*
+<img src="images/2-1.png" alt="Figure 2.1 — Install postgresql-client" width="750">
+*Gambar 2.1: Screenshot hasil `sudo apt install -y postgresql-client`.*
 
 ```bash
-# Koneksi ke PostgreSQL sebagai superuser (postgres)
-PGPASSWORD=adminpass456 psql -h localhost -U postgres -d akademik
+# Koneksi ke database
+psql -h localhost -U labuser -d labdb
 ```
 
-![Figure 2.2 — Koneksi psql ke database akademik](images/placeholder.png)
-*Gambar 2.2: Screenshot hasil koneksi `psql` ke database `akademik` sebagai user `postgres`.*
+<img src="images/2-2.png" alt="Figure 2.2 — Koneksi psql" width="600">
+*Gambar 2.2: Screenshot hasil koneksi `psql -h localhost -U labuser -d labdb`.*
 
 ```sql
--- Lihat semua database di server
-\l
+-- Di dalam psql:
+\l  -- list databases
 ```
 
-![Figure 2.3 — psql \l list database](images/placeholder.png)
-*Gambar 2.3: Screenshot hasil perintah `\l` menampilkan daftar database termasuk `akademik`.*
+<img src="images/2-3.png" alt="Figure 2.3 — psql \l" width="600">
+*Gambar 2.3: Screenshot hasil perintah `\l` menampilkan daftar database.*
 
 ```sql
--- Lihat semua schema
-\dn
+\dn  -- list schemas
 ```
 
-![Figure 2.4 — psql \dn list schema](images/placeholder.png)
-*Gambar 2.4: Screenshot hasil perintah `\dn` menampilkan schema `app` dan `public`.*
+<img src="images/2-4.png" alt="Figure 2.4 — psql \dn" width="500">
+*Gambar 2.4: Screenshot hasil perintah `\dn`.*
 
 ```sql
--- Lihat semua tabel di schema app
-\dt app.*
+\dt app.*  -- list tabel di schema app
 ```
 
-![Figure 2.5 — psql \dt app.*](images/placeholder.png)
-*Gambar 2.5: Screenshot hasil perintah `\dt app.*` menampilkan tabel `mahasiswa`, `mata_kuliah`, dan `nilai`.*
+<img src="images/2-5.png" alt="Figure 2.5 — psql \dt app.*" width="600">
+*Gambar 2.5: Screenshot hasil perintah `\dt app.*`.*
 
 ```sql
--- Lihat detail struktur tabel mahasiswa
-\d+ app.mahasiswa
+\d+ app.mahasiswa  -- describe tabel mahasiswa
 ```
 
-![Figure 2.6 — psql \d+ app.mahasiswa](images/placeholder.png)
-*Gambar 2.6: Screenshot hasil `\d+ app.mahasiswa` menampilkan kolom, tipe data, constraint, dan index tabel mahasiswa.*
+<img src="images/2-6.png" alt="Figure 2.6 — psql \d+ app.mahasiswa" width="750">
+*Gambar 2.6: Screenshot hasil `\d+ app.mahasiswa`.*
 
 ```sql
--- Query: tampilkan seluruh data mahasiswa
 SELECT * FROM app.mahasiswa;
-
--- Query: tampilkan mahasiswa dengan nilai mata kuliah
-SELECT
-    m.nim,
-    m.nama,
-    mk.nama AS mata_kuliah,
-    n.nilai,
-    n.grade
-FROM app.mahasiswa m
-JOIN app.nilai n ON m.id = n.mahasiswa_id
-JOIN app.mata_kuliah mk ON n.mata_kuliah_id = mk.id
-ORDER BY m.nim, mk.nama;
-```
-
-![Figure 2.7 — Query SELECT data mahasiswa dan join](images/placeholder.png)
-*Gambar 2.7: Screenshot hasil query `SELECT` data mahasiswa dan `JOIN` dengan tabel nilai dan mata kuliah.*
-
-```sql
--- Keluar dari psql
+SELECT * FROM app.matakuliah;
 \q
 ```
 
-#### 2.2 Koneksi langsung via `docker exec`
+<img src="images/2-7.png" alt="Figure 2.7 — Query SELECT" width="700">
+*Gambar 2.7: Screenshot hasil query SELECT data mahasiswa dan matakuliah.*
+
+#### 2.2 Koneksi via docker exec
 
 ```bash
-# Koneksi ke PostgreSQL di dalam container (tanpa perlu install psql di host)
-docker exec -it postgres-db psql -U labuser -d akademik
+# Masuk ke psql di dalam container
+docker exec -it postgres-db psql -U labuser -d labdb
 ```
 
-![Figure 2.8 — docker exec psql ke container](images/placeholder.png)
-*Gambar 2.8: Screenshot hasil `docker exec -it postgres-db psql -U labuser -d akademik` — masuk ke psql di dalam container.*
+<img src="images/2-8.png" alt="Figure 2.8 — docker exec psql" width="600">
+*Gambar 2.8: Screenshot hasil `docker exec -it postgres-db psql -U labuser -d labdb`.*
 
 ```sql
--- Query gabungan: mahasiswa dengan total SKS yang diambil
-SELECT
-    m.nim,
-    m.nama,
-    m.jurusan,
-    COUNT(n.id) AS jumlah_mk,
-    COALESCE(SUM(mk.sks), 0) AS total_sks
-FROM app.mahasiswa m
-LEFT JOIN app.nilai n ON m.id = n.mahasiswa_id
-LEFT JOIN app.mata_kuliah mk ON n.mata_kuliah_id = mk.id
-GROUP BY m.id, m.nim, m.nama, m.jurusan
-ORDER BY total_sks DESC;
+-- Query join: Nilai mahasiswa
+SELECT m.nrp, m.nama, mk.nama AS matakuliah, n.nilai_angka, n.grade
+FROM app.nilai n
+JOIN app.mahasiswa m ON n.mahasiswa_id = m.id
+JOIN app.matakuliah mk ON n.matakuliah_id = mk.id
+ORDER BY m.nrp, mk.nama;
 
 \q
 ```
 
-![Figure 2.9 — Query join mahasiswa dengan total SKS](images/placeholder.png)
-*Gambar 2.9: Screenshot hasil query gabungan mahasiswa dengan jumlah mata kuliah dan total SKS.*
+<img src="images/2-9.png" alt="Figure 2.9 — Query JOIN" width="700">
+*Gambar 2.9: Screenshot hasil query JOIN menampilkan nilai mahasiswa.*
 
-#### 2.3 Akses pgAdmin via browser
+#### 2.3 Koneksi via pgAdmin4
 
-1. Buka browser ke http://localhost:8080
-2. Login dengan:
-   - **Email:** `admin@pens.ac.id`
-   - **Password:** `pgadmin123`
-3. Tambahkan server baru:
-   - Klik kanan **Servers** → **Register** → **Server...**
-   - Tab **General**:
-     - Name: `PostgreSQL-Lab`
-   - Tab **Connection**:
-     - Host name/address: `db` (nama service di docker-compose)
-     - Port: `5432`
-     - Maintenance database: `akademik`
-     - Username: `labuser`
-     - Password: `labpass123`
-4. Klik **Save**
-5. Jelajahi: **Servers → PostgreSQL-Lab → Databases → akademik → Schemas → app → Tables**
+1. Buka browser: http://localhost:5050
+2. Login: `admin@pens.ac.id` / `admin123`
+3. **Add New Server:**
+   - **Name:** `Lab PostgreSQL`
+   - **Host:** `db` (nama service di Docker Compose)
+   - **Port:** `5432`
+   - **Database:** `labdb`
+   - **Username:** `labuser`
+   - **Password:** `labpass123`
+4. Navigate: **Servers → Lab PostgreSQL → Databases → labdb → Schemas → app → Tables**
+5. Klik kanan tabel `mahasiswa` → **View/Edit Data → All Rows**
 
-![Figure 2.10 — pgAdmin login dan koneksi ke server](images/placeholder.png)
-*Gambar 2.10: Screenshot pgAdmin: (kiri) halaman login pgAdmin, (kanan) dialog Register Server dengan konfigurasi koneksi ke PostgreSQL container.*
+<img src="images/2-10.png" alt="Figure 2.10 — pgAdmin4" width="700">
+*Gambar 2.10: Screenshot pgAdmin4 — koneksi dan navigasi tabel.*
 
 ---
 
 ### Langkah 3: Operasi CRUD SQL
 
-```sql
--- ============================================================
--- Operasi CRUD pada database akademik
--- ============================================================
+```bash
+docker exec -it postgres-db psql -U labuser -d labdb << 'SQLEOF'
 
--- A. CREATE — Tambah data baru
-INSERT INTO app.mahasiswa (nim, nama, jurusan, angkatan, email)
-VALUES ('3124600041', 'Linda Kusuma', 'Teknik Informatika', 2024, 'linda@pens.ac.id');
+-- === CREATE ===
+INSERT INTO app.mahasiswa (nrp, nama, kelas, kelompok, email)
+VALUES ('3122600010', 'Fajar Rizki', 'D', 5, 'fajar@student.pens.ac.id');
 
-INSERT INTO app.nilai (mahasiswa_id, mata_kuliah_id, nilai, grade, semester_ambil)
-VALUES (6, 1, '90', 'A', 4);
+-- === READ ===
+-- Semua mahasiswa kelas A
+SELECT * FROM app.mahasiswa WHERE kelas = 'A';
 
--- B. READ — Baca data
-SELECT * FROM app.mahasiswa WHERE nim = '3124600041';
+-- Rata-rata nilai per matakuliah
+SELECT mk.nama, AVG(n.nilai_angka)::NUMERIC(5,2) AS rata_rata, COUNT(*) AS jumlah
+FROM app.nilai n
+JOIN app.matakuliah mk ON n.matakuliah_id = mk.id
+GROUP BY mk.nama
+ORDER BY rata_rata DESC;
 
--- C. UPDATE — Ubah data
-UPDATE app.mahasiswa
-SET email = 'linda.kusuma@pens.ac.id'
-WHERE nim = '3124600041';
+-- === UPDATE ===
+UPDATE app.mahasiswa SET email = 'fajar.rizki@student.pens.ac.id'
+WHERE nrp = '3122600010';
 
--- Verifikasi update
-SELECT nim, nama, email FROM app.mahasiswa WHERE nim = '3124600041';
+-- === DELETE ===
+DELETE FROM app.mahasiswa WHERE nrp = '3122600010';
 
--- D. DELETE — Hapus data
-DELETE FROM app.nilai
-WHERE mahasiswa_id = (SELECT id FROM app.mahasiswa WHERE nim = '3124600041');
+-- === JSONB query (untuk tabel activity_log) ===
+INSERT INTO app.activity_log (level, source, message, metadata)
+VALUES ('INFO', 'web-app', 'User login', '{"user": "admin", "ip": "192.168.1.10"}');
 
-DELETE FROM app.mahasiswa WHERE nim = '3124600041';
+SELECT * FROM app.activity_log
+WHERE metadata->>'user' = 'admin';
 
--- E. Verifikasi akhir — data kembali seperti semula
-SELECT COUNT(*) AS jumlah_mahasiswa FROM app.mahasiswa;
-SELECT COUNT(*) AS jumlah_nilai FROM app.nilai;
+SQLEOF
 ```
 
-![Figure 3.1 — Hasil operasi CRUD](images/placeholder.png)
-*Gambar 3.1: Screenshot hasil seluruh operasi CRUD: INSERT data baru, SELECT verifikasi, UPDATE email, dan DELETE mengembalikan data seperti semula.*
+<img src="images/3-1.png" alt="Figure 3.1 — Operasi CRUD" width="750">
+*Gambar 3.1: Screenshot hasil operasi CRUD SQL.*
 
 ---
 
 ### Langkah 4: Backup dan Restore
 
-#### 4.1 Backup database
+#### 4.1 Backup database (pg_dump)
 
 ```bash
-# Backup format custom (-Fc) — compressed, mendukung pg_restore
-docker exec postgres-db pg_dump \
-  -U postgres \
-  -Fc \
-  -d akademik \
-  > backup/akademik-backup.custom
+# Backup dalam format custom (compressed, restorable)
+docker exec postgres-db pg_dump -U labuser -d labdb -Fc \
+  -f /backup/labdb_backup.dump
 
-# Backup format SQL plain text — readable, bisa di-psql langsung
-docker exec postgres-db pg_dump \
-  -U postgres \
-  -Fp \
-  -d akademik \
-  > backup/akademik-backup.sql
+# Backup dalam format SQL plain text
+docker exec postgres-db pg_dump -U labuser -d labdb \
+  -f /backup/labdb_backup.sql
 
-# Bandingkan ukuran file
-ls -lh backup/
+# Backup hanya schema app
+docker exec postgres-db pg_dump -U labuser -d labdb -n app -Fc \
+  -f /backup/labdb_schema_app.dump
+
+# Verifikasi file backup di host
+ls -la backup/
 ```
 
-![Figure 4.1 — Backup database format custom dan SQL](images/placeholder.png)
-*Gambar 4.1: Screenshot hasil backup database: (atas) perintah `pg_dump` format custom dan plain SQL, (bawah) perbandingan ukuran file backup.*
+<img src="images/4-1.png" alt="Figure 4.1 — Backup database" width="700">
+*Gambar 4.1: Screenshot hasil backup database — format custom, SQL, dan schema-only.*
 
 #### 4.2 Restore database
 
 ```bash
-# Buat database baru untuk pengujian restore
-docker exec postgres-db psql -U postgres -c "CREATE DATABASE akademik_restore OWNER labuser;"
+# Buat database baru untuk restore test
+docker exec postgres-db psql -U labuser -d postgres -c "CREATE DATABASE labdb_restore;"
 ```
 
-![Figure 4.2 — Membuat database untuk restore](images/placeholder.png)
-*Gambar 4.2: Screenshot hasil `CREATE DATABASE akademik_restore` untuk pengujian restore.*
+<img src="images/4-2.png" alt="Figure 4.2 — Buat database restore" width="600">
+*Gambar 4.2: Screenshot hasil `CREATE DATABASE labdb_restore`.*
 
 ```bash
-# Restore dari format custom menggunakan pg_restore
-docker exec -i postgres-db pg_restore \
-  -U postgres \
-  -d akademik_restore \
-  < backup/akademik-backup.custom
+# Restore dari custom format
+docker exec postgres-db pg_restore -U labuser -d labdb_restore \
+  /backup/labdb_backup.dump
 
-# Verifikasi data berhasil direstore
-docker exec postgres-db psql -U postgres -d akademik_restore \
-  -c "SELECT COUNT(*) FROM app.mahasiswa;"
-docker exec postgres-db psql -U postgres -d akademik_restore \
-  -c "SELECT COUNT(*) FROM app.nilai;"
-
-# Cleanup: hapus database restore
-docker exec postgres-db psql -U postgres -c "DROP DATABASE akademik_restore;"
+# Verifikasi restore
+docker exec postgres-db psql -U labuser -d labdb_restore -c "SELECT * FROM app.mahasiswa;"
 ```
 
-![Figure 4.3 — Restore database dan verifikasi](images/placeholder.png)
-*Gambar 4.3: Screenshot hasil restore database: `pg_restore` ke `akademik_restore`, verifikasi jumlah data, dan drop database.*
+<img src="images/4-3.png" alt="Figure 4.3 — Restore database" width="700">
+*Gambar 4.3: Screenshot hasil restore dan verifikasi data.*
 
-#### 4.3 Automated backup script
+#### 4.3 Backup otomatis dengan cron di container
 
 ```bash
-cat > backup/auto-backup.sh << 'EOF'
-#!/bin/bash
-# ============================================================
-# Auto Backup Script for PostgreSQL Docker
-# Usage: ./auto-backup.sh [retention_days]
-# ============================================================
-
-set -euo pipefail
-
-# --- Konfigurasi ---
-CONTAINER_NAME="postgres-db"
-BACKUP_DIR="./backup"
-DB_USER="postgres"
-DB_NAME="akademik"
-RETENTION_DAYS="${1:-7}"           # Default: simpan 7 hari
-TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
-
-# --- Buat direktori backup jika belum ada ---
-mkdir -p "$BACKUP_DIR"
-
-# --- Backup format custom ---
-echo "[$(date)] Memulai backup database $DB_NAME ..."
-docker exec "$CONTAINER_NAME" pg_dump \
-  -U "$DB_USER" \
-  -Fc \
-  -d "$DB_NAME" \
-  > "$BACKUP_DIR/${DB_NAME}_${TIMESTAMP}.custom"
-
-# --- Kompresi dengan gzip (opsional, custom sudah terkompresi) ---
-gzip -f "$BACKUP_DIR/${DB_NAME}_${TIMESTAMP}.custom"
-
-echo "[$(date)] Backup selesai: ${DB_NAME}_${TIMESTAMP}.custom.gz"
-
-# --- Rotasi: hapus backup lebih lama dari RETENTION_DAYS ---
-echo "[$(date)] Menghapus backup lebih lama dari $RETENTION_DAYS hari..."
-find "$BACKUP_DIR" -name "${DB_NAME}_*.custom.gz" -mtime +"$RETENTION_DAYS" -delete
-
-# --- Tampilkan daftar backup ---
-echo "[$(date)] Daftar backup saat ini:"
-ls -lh "$BACKUP_DIR"/*.custom.gz 2>/dev/null || echo "  (belum ada backup)"
-
-echo "[$(date)] Selesai."
-EOF
-
+# Buat script backup
+cat > backup/auto-backup.sh << 'BASH'
+#!/bin/sh
+TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+BACKUP_FILE="/backup/labdb_${TIMESTAMP}.dump"
+pg_dump -U labuser -d labdb -Fc -f "$BACKUP_FILE"
+echo "[$(date)] Backup created: $BACKUP_FILE"
+# Hapus backup lebih dari 7 hari
+find /backup -name "labdb_*.dump" -mtime +7 -delete
+BASH
 chmod +x backup/auto-backup.sh
 ```
 
-![Figure 4.4 — Membuat auto-backup script](images/placeholder.png)
-*Gambar 4.4: Screenshot hasil pembuatan file `backup/auto-backup.sh` dan `chmod +x`.*
+<img src="images/4-4.png" alt="Figure 4.4 — Auto-backup script" width="700">
+*Gambar 4.4: Screenshot hasil pembuatan `backup/auto-backup.sh`.*
 
 ```bash
-# Jalankan script backup
-./backup/auto-backup.sh 30
+# Test jalankan manual
+docker exec postgres-db /backup/auto-backup.sh
 ```
 
-![Figure 4.5 — Menjalankan auto-backup.sh](images/placeholder.png)
-*Gambar 4.5: Screenshot hasil eksekusi `./backup/auto-backup.sh 30` — backup berhasil dibuat dan rotasi dijalankan.*
+<img src="images/4-5.png" alt="Figure 4.5 — Jalankan auto-backup" width="600">
+*Gambar 4.5: Screenshot hasil menjalankan `auto-backup.sh`.*
 
 ```bash
-# Lihat file backup yang dihasilkan
-ls -lh backup/
+ls -la backup/
 ```
 
-![Figure 4.6 — ls -lh backup/](images/placeholder.png)
-*Gambar 4.6: Screenshot hasil `ls -lh backup/` menampilkan file-file backup termasuk hasil script otomatis.*
+<img src="images/4-6.png" alt="Figure 4.6 — ls backup" width="600">
+*Gambar 4.6: Screenshot hasil `ls -la backup/` menampilkan file backup.*
 
 ---
 
@@ -641,60 +517,56 @@ ls -lh backup/
 
 #### 5.1 Statistik database
 
-```sql
--- Query 1: Statistik koneksi aktif
-SELECT
-    pid,
-    usename  AS username,
-    application_name,
-    client_addr,
-    state,
-    query_start,
-    LEFT(query, 80) AS query_preview
-FROM pg_stat_activity
-WHERE state IS NOT NULL
-  AND pid <> pg_backend_pid()
-ORDER BY query_start DESC;
-```
+```bash
+docker exec -it postgres-db psql -U labuser -d labdb << 'SQLEOF'
 
-![Figure 5.1 — Query statistik koneksi aktif](images/placeholder.png)
-*Gambar 5.1: Screenshot hasil query `pg_stat_activity` menampilkan koneksi aktif ke database.*
+-- Ukuran database
+SELECT pg_database.datname,
+       pg_size_pretty(pg_database_size(pg_database.datname)) AS size
+FROM pg_database
+ORDER BY pg_database_size(pg_database.datname) DESC;
 
-```sql
--- Query 2: Statistik tabel (ukuran, rows, sequential vs index scan)
-SELECT
-    schemaname,
-    relname                                              AS table_name,
-    n_live_tup                                           AS estimated_rows,
-    pg_size_pretty(pg_total_relation_size(relid))        AS total_size,
-    pg_size_pretty(pg_relation_size(relid))              AS data_size,
-    pg_size_pretty(pg_total_relation_size(relid)
-                   - pg_relation_size(relid))             AS index_size,
-    seq_scan,
-    idx_scan,
-    n_tup_ins                                            AS inserts,
-    n_tup_upd                                            AS updates,
-    n_tup_del                                            AS deletes
-FROM pg_stat_user_tables
+-- Ukuran per tabel
+SELECT schemaname || '.' || tablename AS table_full,
+       pg_size_pretty(pg_total_relation_size(schemaname || '.' || tablename)) AS total_size
+FROM pg_tables
 WHERE schemaname = 'app'
-ORDER BY pg_total_relation_size(relid) DESC;
+ORDER BY pg_total_relation_size(schemaname || '.' || tablename) DESC;
+
+-- Koneksi aktif
+SELECT pid, usename, datname, client_addr, state, query_start, query
+FROM pg_stat_activity
+WHERE datname = 'labdb';
+
+-- Statistik tabel (hits, reads, cache ratio)
+SELECT relname,
+       seq_scan, seq_tup_read,
+       idx_scan, idx_tup_fetch,
+       n_tup_ins, n_tup_upd, n_tup_del
+FROM pg_stat_user_tables
+WHERE schemaname = 'app';
+
+SQLEOF
 ```
 
-![Figure 5.2 — Query statistik tabel](images/placeholder.png)
-*Gambar 5.2: Screenshot hasil query statistik tabel di schema `app` — ukuran, estimated rows, index usage, dan operasi DML.*
+<img src="images/5-1.png" alt="Figure 5.1 — Statistik database" width="750">
+*Gambar 5.1: Screenshot hasil query statistik database — ukuran database dan per tabel.*
 
-#### 5.2 Monitoring log PostgreSQL
+<img src="images/5-2.png" alt="Figure 5.2 — Statistik koneksi dan tabel" width="750">
+*Gambar 5.2: Screenshot hasil query koneksi aktif dan statistik tabel.*
+
+#### 5.2 Cek PostgreSQL log
 
 ```bash
-# Lihat log PostgreSQL di dalam container
+# Lihat log PostgreSQL
 docker exec postgres-db ls /var/log/postgresql/
-
-# Lihat isi log terbaru
-docker exec postgres-db tail -50 /var/log/postgresql/postgresql-$(date +%Y-%m-%d).log
+docker exec postgres-db cat /var/log/postgresql/postgresql-$(date +%Y-%m-%d).log | tail -30
 ```
 
-![Figure 5.3 — Log PostgreSQL di container](images/placeholder.png)
-*Gambar 5.3: Screenshot hasil `docker exec` untuk melihat log PostgreSQL — menampilkan koneksi, query yang lambat, dan aktivitas autovacuum.*
+> **Catatan:** Log PostgreSQL tidak muncul di `/var/log/postgresql` karena image `postgres:16-alpine` pada Docker menggunakan mekanisme logging container (stdout/stderr) alih-alih file logging tradisional. Log dapat dibaca menggunakan `docker logs postgres-db`. Konfigurasi `log_directory='/var/log/postgresql'` tidak berjalan karena direktori log tidak tersedia di container.
+
+<img src="images/5-3.png" alt="Figure 5.3 — Log PostgreSQL" width="750">
+*Gambar 5.3: Screenshot hasil pengecekan log PostgreSQL di container.*
 
 ---
 
@@ -710,22 +582,13 @@ SELECT * FROM app.mahasiswa;
 
 yang masih menampilkan data sebelumnya.
 
-![Figure PostLab 1 — Verifikasi data setelah docker compose down dan up](images/placeholder.png)
-*Gambar PostLab 1: Screenshot hasil `docker compose down`, `docker compose up -d`, lalu query `SELECT * FROM app.mahasiswa` — data masih lengkap.*
-
 ### 2. Jalankan `docker compose down -v` lalu `docker compose up -d`. Apa yang terjadi? Apakah init script dijalankan ulang?
 
 Perintah `docker compose down -v` menghapus container sekaligus seluruh volume terkait. Akibatnya seluruh data database hilang. Saat `docker compose up -d` dijalankan kembali, PostgreSQL membuat volume baru sehingga init script pada `/docker-entrypoint-initdb.d/` dijalankan ulang untuk membuat schema, tabel, user, dan sample data dari awal.
 
-![Figure PostLab 2 — docker compose down -v dan recreate](images/placeholder.png)
-*Gambar PostLab 2: Screenshot hasil `docker compose down -v`, `docker compose up -d`, dan log yang menunjukkan init script dieksekusi ulang.*
-
 ### 3. Bandingkan ukuran file backup format custom vs SQL. Mana yang lebih kecil dan mengapa?
 
 Backup format custom (`-Fc`) biasanya lebih kecil dibanding SQL plain text karena menggunakan kompresi internal PostgreSQL. Format SQL menyimpan seluruh query dalam bentuk teks sehingga ukuran file lebih besar terutama untuk database dengan banyak data.
-
-![Figure PostLab 3 — Perbandingan ukuran backup custom vs SQL](images/placeholder.png)
-*Gambar PostLab 3: Screenshot perbandingan ukuran file `akademik-backup.custom` vs `akademik-backup.sql` menggunakan `ls -lh`.*
 
 ### 4. Buat query yang menampilkan mahasiswa yang belum memiliki nilai di semester apapun.
 
@@ -739,56 +602,11 @@ WHERE n.id IS NULL;
 
 Query tersebut menggunakan `LEFT JOIN` untuk mencari mahasiswa yang tidak memiliki pasangan data pada tabel nilai.
 
-![Figure PostLab 4 — Query mahasiswa tanpa nilai](images/placeholder.png)
-*Gambar PostLab 4: Screenshot hasil query `LEFT JOIN` — menampilkan mahasiswa yang belum memiliki nilai.*
-
 ### 5. Jelaskan peran user `app_reader` yang dibuat di init script. Apa bedanya dengan `labuser`?
 
 - `app_reader` merupakan user read-only yang hanya memiliki hak `SELECT` pada tabel schema `app`. User ini digunakan untuk aplikasi atau monitoring yang hanya perlu membaca data tanpa melakukan perubahan.
 - `labuser` adalah user utama database yang memiliki hak lebih tinggi untuk melakukan operasi seperti `INSERT`, `UPDATE`, `DELETE`, `CREATE TABLE`, dan administrasi database lainnya.
 - Pemisahan role ini meningkatkan keamanan karena prinsip least privilege dapat diterapkan.
-
-![Figure PostLab 5 — Perbandingan privileges app_reader vs labuser](images/placeholder.png)
-*Gambar PostLab 5: Screenshot perbandingan privileges: (kiri) koneksi sebagai `app_reader` hanya bisa SELECT, (kanan) koneksi sebagai `labuser` bisa INSERT/UPDATE/DELETE.*
-
----
-
-## DAFTAR GAMBAR
-
-| Figure | Deskripsi |
-|--------|-----------|
-| 0.1 | Membuat direktori project PostgreSQL |
-| 1.1 | Membuat init script `01-create-schema.sql` |
-| 1.2 | Membuat custom PostgreSQL config |
-| 1.3 | Membuat `docker-compose.yml` |
-| 1.4 | `docker compose up -d` |
-| 1.5 | `docker compose ps` |
-| 1.6 | `docker compose logs db` |
-| 2.1 | Instalasi `postgresql-client` |
-| 2.2 | Koneksi `psql` ke database `akademik` |
-| 2.3 | `\l` — list database |
-| 2.4 | `\dn` — list schema |
-| 2.5 | `\dt app.*` — list tabel |
-| 2.6 | `\d+ app.mahasiswa` — detail struktur tabel |
-| 2.7 | Query `SELECT` dan `JOIN` data mahasiswa |
-| 2.8 | `docker exec` psql ke container |
-| 2.9 | Query join mahasiswa dengan total SKS |
-| 2.10 | pgAdmin login dan koneksi server |
-| 3.1 | Hasil operasi CRUD |
-| 4.1 | Backup database format custom dan SQL |
-| 4.2 | Membuat database untuk restore |
-| 4.3 | Restore database dan verifikasi |
-| 4.4 | Membuat auto-backup script |
-| 4.5 | Menjalankan `auto-backup.sh` |
-| 4.6 | `ls -lh backup/` — daftar file backup |
-| 5.1 | Query statistik koneksi aktif |
-| 5.2 | Query statistik tabel |
-| 5.3 | Log PostgreSQL di container |
-| PostLab 1 | Verifikasi data setelah `docker compose down` dan `up` |
-| PostLab 2 | `docker compose down -v` dan recreate |
-| PostLab 3 | Perbandingan ukuran backup custom vs SQL |
-| PostLab 4 | Query mahasiswa tanpa nilai |
-| PostLab 5 | Perbandingan privileges `app_reader` vs `labuser` |
 
 ---
 

@@ -51,7 +51,7 @@ mkdir -p ~/docker-lab/web-service/{apache/{sites,html-site1,html-site2},nginx,fl
 cd ~/docker-lab/web-service
 ```
 
-![Figure 0.1 — Membuat struktur direktori project](images/placeholder.png)
+<img src="images/0-1.png" alt="Figure 0.1 — Membuat struktur direktori project" width="600">
 *Gambar 0.1: Screenshot hasil `mkdir -p` membuat struktur direktori project web-service.*
 
 ---
@@ -77,7 +77,7 @@ cat > apache/html-site1/index.html << 'EOF'
 EOF
 ```
 
-![Figure 1.1 — Membuat halaman Site 1](images/placeholder.png)
+<img src="images/1-1.png" alt="Figure 1.1 — Membuat halaman Site 1" width="700">
 *Gambar 1.1: Screenshot hasil pembuatan file `apache/html-site1/index.html` untuk Company Profile.*
 
 ```bash
@@ -97,7 +97,7 @@ cat > apache/html-site2/index.html << 'EOF'
 EOF
 ```
 
-![Figure 1.2 — Membuat halaman Site 2](images/placeholder.png)
+<img src="images/1-2.png" alt="Figure 1.2 — Membuat halaman Site 2" width="700">
 *Gambar 1.2: Screenshot hasil pembuatan file `apache/html-site2/index.html` untuk Blog.*
 
 #### 1.2 Buat konfigurasi Apache Virtual Host
@@ -137,7 +137,7 @@ cat > apache/sites/vhosts.conf << 'EOF'
 EOF
 ```
 
-![Figure 1.3 — Membuat konfigurasi Virtual Host Apache](images/placeholder.png)
+<img src="images/1-3.png" alt="Figure 1.3 — Membuat konfigurasi Virtual Host Apache" width="750">
 *Gambar 1.3: Screenshot hasil pembuatan file `apache/sites/vhosts.conf` berisi dua Virtual Host.*
 
 #### 1.3 Buat Dockerfile Apache
@@ -169,7 +169,7 @@ EXPOSE 80
 EOF
 ```
 
-![Figure 1.4 — Membuat Dockerfile Apache](images/placeholder.png)
+<img src="images/1-4.png" alt="Figure 1.4 — Membuat Dockerfile Apache" width="750">
 *Gambar 1.4: Screenshot hasil pembuatan `apache/Dockerfile` untuk build image Apache dengan Virtual Host.*
 
 ---
@@ -186,7 +186,7 @@ openssl req -x509 -nodes -days 365 \
   -addext "subjectAltName=DNS:*.lab,DNS:site1.lab,DNS:site2.lab,DNS:app.lab"
 ```
 
-![Figure 2.1 — Generate self-signed SSL certificate](images/placeholder.png)
+<img src="images/2-1.png" alt="Figure 2.1 — Generate self-signed SSL certificate" width="750">
 *Gambar 2.1: Screenshot hasil `openssl req -x509` menghasilkan self-signed certificate untuk wildcard `*.lab`.*
 
 ```bash
@@ -194,14 +194,14 @@ openssl req -x509 -nodes -days 365 \
 openssl x509 -in certs/server.crt -noout -text | head -20
 ```
 
-![Figure 2.2 — Verifikasi certificate](images/placeholder.png)
+<img src="images/2-2.png" alt="Figure 2.2 — Verifikasi certificate" width="750">
 *Gambar 2.2: Screenshot hasil `openssl x509 -in certs/server.crt -noout -text | head -20` menampilkan detail certificate.*
 
 ```bash
 ls -la certs/
 ```
 
-![Figure 2.3 — List file certificate](images/placeholder.png)
+<img src="images/2-3.png" alt="Figure 2.3 — List file certificate" width="600">
 *Gambar 2.3: Screenshot hasil `ls -la certs/` menampilkan file `server.key` dan `server.crt` beserta permission-nya.*
 
 ---
@@ -304,7 +304,7 @@ server {
 EOF
 ```
 
-![Figure 3.1 — Membuat konfigurasi Nginx Reverse Proxy + SSL](images/placeholder.png)
+<img src="images/3-1.png" alt="Figure 3.1 — Membuat konfigurasi Nginx Reverse Proxy + SSL" width="750">
 *Gambar 3.1: Screenshot hasil pembuatan file `nginx/default.conf` berisi konfigurasi reverse proxy Nginx dengan SSL termination.*
 
 ---
@@ -318,7 +318,7 @@ psycopg2-binary==2.9.*
 EOF
 ```
 
-![Figure 4.1 — Membuat requirements.txt Flask](images/placeholder.png)
+<img src="images/4-1.png" alt="Figure 4.1 — Membuat requirements.txt Flask" width="600">
 *Gambar 4.1: Screenshot hasil pembuatan file `flask/requirements.txt` berisi dependensi Flask dan psycopg2.*
 
 ```bash
@@ -394,7 +394,7 @@ if __name__ == "__main__":
 PYEOF
 ```
 
-![Figure 4.2 — Membuat aplikasi Flask](images/placeholder.png)
+<img src="images/4-2.png" alt="Figure 4.2 — Membuat aplikasi Flask" width="750">
 *Gambar 4.2: Screenshot hasil pembuatan file `flask/app.py` berisi kode API Flask dengan endpoint visitors CRUD.*
 
 ```bash
@@ -409,7 +409,7 @@ CMD ["python", "app.py"]
 EOF
 ```
 
-![Figure 4.3 — Membuat Dockerfile Flask](images/placeholder.png)
+<img src="images/4-3.png" alt="Figure 4.3 — Membuat Dockerfile Flask" width="600">
 *Gambar 4.3: Screenshot hasil pembuatan `flask/Dockerfile` untuk build image Flask backend.*
 
 ---
@@ -495,7 +495,7 @@ networks:
 EOF
 ```
 
-![Figure 5.1 — Membuat docker-compose.yml](images/placeholder.png)
+<img src="images/5-1.png" alt="Figure 5.1 — Membuat docker-compose.yml" width="750">
 *Gambar 5.1: Screenshot hasil pembuatan file `docker-compose.yml` berisi 4 service: proxy, apache-web, flask-app, dan db.*
 
 ---
@@ -509,7 +509,7 @@ EOF
 echo "127.0.0.1 site1.lab site2.lab app.lab" | sudo tee -a /etc/hosts
 ```
 
-![Figure 6.1 — Menambahkan DNS lokal ke /etc/hosts](images/placeholder.png)
+<img src="images/6-1.png" alt="Figure 6.1 — Menambahkan DNS lokal ke /etc/hosts" width="600">
 *Gambar 6.1: Screenshot hasil menambahkan entry `127.0.0.1 site1.lab site2.lab app.lab` ke `/etc/hosts`.*
 
 #### 6.2 Build dan jalankan
@@ -518,14 +518,14 @@ echo "127.0.0.1 site1.lab site2.lab app.lab" | sudo tee -a /etc/hosts
 docker compose up --build -d
 ```
 
-![Figure 6.2 — Docker compose up build](images/placeholder.png)
+<img src="images/6-2.png" alt="Figure 6.2 — Docker compose up build" width="750">
 *Gambar 6.2: Screenshot hasil `docker compose up --build -d` — semua service berhasil di-build dan dijalankan di background.*
 
 ```bash
 docker compose ps
 ```
 
-![Figure 6.3 — Docker compose ps](images/placeholder.png)
+<img src="images/6-3.png" alt="Figure 6.3 — Docker compose ps" width="700">
 *Gambar 6.3: Screenshot hasil `docker compose ps` menampilkan status semua container (proxy, apache-web, flask-app, db).*
 
 #### 6.3 Test Virtual Host Apache via Nginx Proxy
@@ -535,7 +535,7 @@ docker compose ps
 curl -I http://site1.lab:8080
 ```
 
-![Figure 6.4 — Test redirect HTTP ke HTTPS](images/placeholder.png)
+<img src="images/6-4.png" alt="Figure 6.4 — Test redirect HTTP ke HTTPS" width="700">
 *Gambar 6.4: Screenshot hasil `curl -I http://site1.lab:8080` menampilkan response HTTP 301 redirect ke HTTPS.*
 
 ```bash
@@ -544,7 +544,7 @@ curl -k https://site1.lab:8443
 # Harus tampil: "Site 1 — Company Profile"
 ```
 
-![Figure 6.5 — Test Site 1 via HTTPS](images/placeholder.png)
+<img src="images/6-5.png" alt="Figure 6.5 — Test Site 1 via HTTPS" width="700">
 *Gambar 6.5: Screenshot hasil `curl -k https://site1.lab:8443` menampilkan halaman "Site 1 — Company Profile" dari Apache.*
 
 ```bash
@@ -553,7 +553,7 @@ curl -k https://site2.lab:8443
 # Harus tampil: "Site 2 — Blog"
 ```
 
-![Figure 6.6 — Test Site 2 via HTTPS](images/placeholder.png)
+<img src="images/6-6.png" alt="Figure 6.6 — Test Site 2 via HTTPS" width="600">
 *Gambar 6.6: Screenshot hasil `curl -k https://site2.lab:8443` menampilkan halaman "Site 2 — Blog" dari Apache.*
 
 ```bash
@@ -562,7 +562,7 @@ curl -k https://app.lab:8443
 curl -k https://app.lab:8443/api/health | python3 -m json.tool
 ```
 
-![Figure 6.7 — Test Flask API](images/placeholder.png)
+<img src="images/6-7.png" alt="Figure 6.7 — Test Flask API" width="700">
 *Gambar 6.7: Screenshot hasil `curl -k https://app.lab:8443` dan `curl -k https://app.lab:8443/api/health` menampilkan response JSON dari Flask backend.*
 
 #### 6.4 Test API CRUD
@@ -574,7 +574,7 @@ curl -k -X POST https://app.lab:8443/api/visitors \
   -d '{"name": "Mahasiswa PENS"}'
 ```
 
-![Figure 6.8 — POST visitor ke API](images/placeholder.png)
+<img src="images/6-8.png" alt="Figure 6.8 — POST visitor ke API" width="700">
 *Gambar 6.8: Screenshot hasil POST ke `/api/visitors` — response JSON berisi id, name, dan visited_at dari visitor baru.*
 
 ```bash
@@ -582,7 +582,7 @@ curl -k -X POST https://app.lab:8443/api/visitors \
 curl -k https://app.lab:8443/api/visitors | python3 -m json.tool
 ```
 
-![Figure 6.9 — GET daftar visitor](images/placeholder.png)
+<img src="images/6-9.png" alt="Figure 6.9 — GET daftar visitor" width="700">
 *Gambar 6.9: Screenshot hasil GET `/api/visitors` menampilkan daftar visitor dalam format JSON yang terformat rapi.*
 
 #### 6.5 Cek SSL Certificate
@@ -593,7 +593,7 @@ echo | openssl s_client -connect site1.lab:8443 -servername site1.lab 2>/dev/nul
   openssl x509 -noout -subject -issuer -dates
 ```
 
-![Figure 6.10 — Cek SSL certificate](images/placeholder.png)
+<img src="images/6-10.png" alt="Figure 6.10 — Cek SSL certificate" width="700">
 *Gambar 6.10: Screenshot hasil `openssl s_client` menampilkan subject, issuer, dan masa berlaku certificate self-signed.*
 
 #### 6.6 Analisis Log
@@ -603,14 +603,14 @@ echo | openssl s_client -connect site1.lab:8443 -servername site1.lab 2>/dev/nul
 docker exec nginx-proxy cat /var/log/nginx/site1-access.log
 ```
 
-![Figure 6.11 — Log akses Nginx Site 1](images/placeholder.png)
+<img src="images/6-11.png" alt="Figure 6.11 — Log akses Nginx Site 1" width="600">
 *Gambar 6.11: Screenshot hasil `docker exec nginx-proxy cat /var/log/nginx/site1-access.log` menampilkan log akses ke site1.lab.*
 
 ```bash
 docker exec nginx-proxy cat /var/log/nginx/app-access.log
 ```
 
-![Figure 6.12 — Log akses Nginx App](images/placeholder.png)
+<img src="images/6-12.png" alt="Figure 6.12 — Log akses Nginx App" width="700">
 *Gambar 6.12: Screenshot hasil `docker exec nginx-proxy cat /var/log/nginx/app-access.log` menampilkan log akses ke app.lab.*
 
 ```bash
@@ -618,7 +618,7 @@ docker exec nginx-proxy cat /var/log/nginx/app-access.log
 docker exec apache-web cat /var/log/apache2/site1-access.log
 ```
 
-![Figure 6.13 — Log akses Apache Site 1](images/placeholder.png)
+<img src="images/6-13.png" alt="Figure 6.13 — Log akses Apache Site 1" width="700">
 *Gambar 6.13: Screenshot hasil `docker exec apache-web cat /var/log/apache2/site1-access.log` menampilkan log akses Apache.*
 
 ```bash
@@ -626,7 +626,7 @@ docker exec apache-web cat /var/log/apache2/site1-access.log
 docker run --rm -v $(docker compose config --volumes | head -1):/logs alpine ls /logs
 ```
 
-![Figure 6.14 — Akses log via Docker volume](images/placeholder.png)
+<img src="images/6-14.png" alt="Figure 6.14 — Akses log via Docker volume" width="700">
 *Gambar 6.14: Screenshot hasil akses log container melalui Docker volume dengan container sementara Alpine.*
 
 ---
@@ -640,9 +640,6 @@ Header yang menunjukkan software web server adalah header `Server`.
 - Nginx biasanya menampilkan header seperti `Server: nginx/1.x`.
 Header tersebut menunjukkan software web server yang menangani request client.
 
-![Figure PostLab 1 — Perbandingan response header Apache vs Nginx](images/placeholder.png)
-*Gambar PostLab 1: Screenshot perbandingan response header dari `curl -I` ke Apache langsung dan melalui Nginx proxy, menunjukkan header `Server` yang berbeda.*
-
 ### 2. Jika Nginx proxy down, apakah Apache masih bisa diakses langsung? Bagaimana cara testnya?
 
 Apache masih dapat diakses langsung jika port Apache diekspos ke host atau dilakukan port forwarding manual. Pengujian dapat dilakukan menggunakan curl langsung ke port Apache container, misalnya:
@@ -653,9 +650,6 @@ curl http://localhost:8081
 ```
 
 Jika halaman tetap muncul, berarti Apache tetap berjalan meskipun reverse proxy Nginx down.
-
-![Figure PostLab 2 — Test Apache langsung tanpa Nginx](images/placeholder.png)
-*Gambar PostLab 2: Screenshot hasil `curl http://localhost:8081` mengakses Apache langsung tanpa melalui reverse proxy Nginx.*
 
 ### 3. Tunjukkan bahwa X-Real-IP header diteruskan dengan benar dari Nginx ke Flask.
 
@@ -673,9 +667,6 @@ request.headers.get("X-Real-IP")
 
 Jika response Flask menampilkan alamat IP client asli, maka forwarding header berhasil.
 
-![Figure PostLab 3 — Verifikasi X-Real-IP header forwarding](images/placeholder.png)
-*Gambar PostLab 3: Screenshot response JSON dari Flask endpoint `/` yang menampilkan `client_ip` sesuai dengan IP client asli, membuktikan `X-Real-IP` berhasil diteruskan.*
-
 ### 4. Jelaskan mengapa Flask app perlu terhubung ke dua network (web-net dan db-net).
 
 Flask app perlu berada di dua network karena berfungsi sebagai penghubung antara frontend dan database.
@@ -683,15 +674,9 @@ Flask app perlu berada di dua network karena berfungsi sebagai penghubung antara
 - `db-net` digunakan agar Flask dapat berkomunikasi dengan PostgreSQL.
 Dengan pemisahan network, database menjadi lebih terisolasi dan tidak langsung terekspos ke frontend.
 
-![Figure PostLab 4 — Ilustrasi network isolation](images/placeholder.png)
-*Gambar PostLab 4: Screenshot hasil `docker network inspect web-net` dan `docker network inspect db-net` menunjukkan container yang terhubung ke masing-masing network.*
-
 ### 5. Apa yang terjadi jika file server.key atau server.crt dihapus saat container running?
 
 Jika file certificate atau private key dihapus saat container sedang berjalan, koneksi HTTPS dapat gagal ketika Nginx melakukan reload atau restart konfigurasi. Nginx membutuhkan kedua file tersebut untuk proses SSL handshake. Jika salah satu file hilang, service HTTPS tidak dapat berjalan dengan benar dan biasanya menghasilkan error SSL atau gagal start.
-
-![Figure PostLab 5 — Error SSL saat certificate dihapus](images/placeholder.png)
-*Gambar PostLab 5: Screenshot error yang muncul saat mencoba akses HTTPS setelah file `server.key` atau `server.crt` dihapus dari container.*
 
 ---
 
@@ -726,11 +711,6 @@ Jika file certificate atau private key dihapus saat container sedang berjalan, k
 | 6.12 | Log akses Nginx App |
 | 6.13 | Log akses Apache Site 1 |
 | 6.14 | Akses log via Docker volume |
-| PostLab 1 | Perbandingan response header Apache vs Nginx |
-| PostLab 2 | Test Apache langsung tanpa Nginx |
-| PostLab 3 | Verifikasi X-Real-IP header forwarding |
-| PostLab 4 | Ilustrasi network isolation |
-| PostLab 5 | Error SSL saat certificate dihapus |
 
 ---
 
